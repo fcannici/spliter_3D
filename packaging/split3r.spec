@@ -41,6 +41,8 @@ for _package in (
     "vtk",
     "vtkmodules",
     "trimesh",
+    "networkx",
+    "lxml",
     "scipy",
     "matplotlib",
 ):

@@ -6,4 +6,6 @@ vtk
 numpy
 scipy
 trimesh
+networkx
+lxml
 matplotlib
