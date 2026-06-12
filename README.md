@@ -14,9 +14,19 @@ Split3r Clone es una aplicación experimental en Python para cargar modelos 3D (
 
 ## Instalación
 
+Windows PowerShell:
+
+```powershell
+python -m venv venv
+. .\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+Linux/macOS:
+
 ```bash
 python -m venv venv
-venv\\Scripts\\activate  # Windows
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -38,7 +48,43 @@ Luego usa **Archivo > Importar STL/OBJ/3MF...** para cargar un modelo.
 - `Archivo > Exportar último plug...`: guardar la pieza extraída.
 - `Archivo > Exportar body/socket...`: guardar la malla restante.
 
+## Builds de escritorio
+
+La repo incluye empaquetado con PyInstaller para generar bundles nativos por plataforma desde la misma base de código.
+
+> Importante: los builds deben correrse en la plataforma destino. Para generar `.exe`, correr el build en Windows; para generar el binario Linux, correrlo en Linux. Se recomienda Python 3.11 o 3.12 para builds reproducibles con PyInstaller/PyVista/VTK.
+
+Linux:
+
+```bash
+./scripts/build_linux.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\build_windows.ps1
+```
+
+Cada script crea un entorno `.venv-build/`, instala `requirements-build.txt`, valida sintaxis y ejecuta PyInstaller con `packaging/split3r.spec`.
+
+Los artefactos quedan en:
+
+```txt
+dist/Split3rClone/
+```
+
+En Windows, el ejecutable queda dentro de esa carpeta como `Split3rClone.exe`. En Linux, queda como `Split3rClone`.
+
+También hay un workflow opcional en `.github/workflows/build.yml` para validar/generar ambos artefactos en CI.
+
 ## Scripts auxiliares
+
+Las dependencias de estos scripts son opcionales:
+
+```bash
+pip install -r requirements-scripts.txt
+```
 
 Extraer frames:
 
@@ -61,7 +107,8 @@ python scripts/transcribe.py --video ruta/video.mp4 --audio audio.wav --language
 ## Tests y validación ligera
 
 ```bash
-python -m py_compile main.py app/*.py scripts/*.py
+pip install -r requirements-dev.txt
+python -m compileall -q main.py app scripts tests
 pytest
 ```
 

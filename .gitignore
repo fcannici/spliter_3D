@@ -11,10 +11,14 @@ venv/
 .venv/
 env/
 
-# Logs, runtime state, and temporary output
+# Logs, runtime state, build artifacts, and temporary output
 *.log
 app_log.txt
 .threadwell/
+build/
+dist/
+*.spec.bak
+.venv-build/
 frames/
 frames*/
 audio.wav
