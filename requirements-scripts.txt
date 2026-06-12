@@ -1,0 +1,4 @@
+# Optional dependencies for helper scripts under scripts/
+opencv-python
+moviepy
+SpeechRecognition
