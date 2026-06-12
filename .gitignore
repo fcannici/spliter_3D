@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Logs, runtime state, and temporary output
+*.log
+app_log.txt
+.threadwell/
+frames/
+frames*/
+audio.wav
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Large local assets: keep examples in assets/ only if intentionally versioned
+*.stl
+*.3mf
+!assets/.gitkeep

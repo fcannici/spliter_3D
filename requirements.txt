@@ -1,0 +1,14 @@
+PyQt6
+pyvista
+pyvistaqt
+vtk
+numpy
+scipy
+trimesh
+matplotlib
+pytest
+
+# Optional helper scripts
+opencv-python
+moviepy
+SpeechRecognition
