@@ -31,6 +31,28 @@ El prototipo PyVista/VTK demostr처 que la selecci처n funciona, pero la generaci�
 7. Si el resultado se ve correcto, aplicar el modifier o activar `Apply boolean`.
 8. Exportar plug/body como STL.
 
+## Puente Threadwell / pruebas asistidas
+
+El panel incluye una secci처n **Threadwell Test Request**:
+
+1. Elegir el archivo en **Test file** o con **Pick Test File**.
+2. Escribir instrucciones en **Prompt**.
+3. Presionar **Send Request to Threadwell**.
+
+Esto guarda un JSON en:
+
+```txt
+%USERPROFILE%\split3r_blender_request.json
+```
+
+Threadwell puede leer ese request y ejecutar el smoke test headless:
+
+```powershell
+"C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" --background --factory-startup --python scripts\blender_split3r_smoke_test.py -- "$env:USERPROFILE\split3r_blender_request.json"
+```
+
+El reporte se escribe al lado como `split3r_blender_request.report.json`.
+
 ## Estado
 
 Este add-on es un prototipo inicial. La intenci처n es reemplazar el core de extracci처n manual de la app PyVista por operaciones robustas de Blender.

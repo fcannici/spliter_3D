@@ -22,4 +22,4 @@ Split3r Clone is now identified as a Python desktop app for 3D mesh face selecti
 
 ## Next
 
-Install and smoke-test `blender_split3r_addon/` in Blender with the Aztec whistle 3MF: Smart Shell selection, plug Solidify, socket Boolean EXACT, and STL export.
+Use the new `Threadwell Test Request` section in `blender_split3r_addon/` to choose a test file/prompt from Blender, then run `scripts/blender_split3r_smoke_test.py` headlessly with Blender to validate import, Smart Shell, plug/socket, and export flow.

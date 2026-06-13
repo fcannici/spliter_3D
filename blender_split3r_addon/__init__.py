@@ -8,6 +8,7 @@ bl_info = {
     "category": "Mesh",
 }
 
+import json
 import math
 import os
 import xml.etree.ElementTree as ET
@@ -68,6 +69,23 @@ class Split3rSettings(PropertyGroup):
         name="Save STL copy",
         description="After importing a 3MF, also save an STL copy next to the source file",
         default=False,
+    )
+    ai_test_file: StringProperty(
+        name="Test file",
+        description="3MF/STL file path that Threadwell should test",
+        default="",
+        subtype="FILE_PATH",
+    )
+    ai_prompt: StringProperty(
+        name="Prompt",
+        description="Instructions for Threadwell about what to test or fix in the add-on",
+        default="Probá este archivo con el add-on Split3r en Blender y revisá importación, Smart Shell, plug/socket y export STL.",
+    )
+    ai_request_path: StringProperty(
+        name="Request path",
+        description="Where the Blender-to-Threadwell request JSON is written",
+        default=str(Path.home() / "split3r_blender_request.json"),
+        subtype="FILE_PATH",
     )
 
 
@@ -255,6 +273,63 @@ class SPLIT3R_OT_import_3mf(Operator, ImportHelper):
         return {"FINISHED"}
 
 
+class SPLIT3R_OT_pick_ai_test_file(Operator, ImportHelper):
+    bl_idname = "split3r.pick_ai_test_file"
+    bl_label = "Pick Test File"
+    bl_description = "Choose the file path that will be sent to Threadwell for testing"
+    bl_options = {"REGISTER"}
+
+    filename_ext = ".3mf"
+    filter_glob: StringProperty(default="*.3mf;*.stl;*.obj", options={"HIDDEN"})
+
+    def execute(self, context):
+        context.scene.split3r_settings.ai_test_file = self.filepath
+        self.report({"INFO"}, f"Archivo de prueba seleccionado: {self.filepath}")
+        return {"FINISHED"}
+
+
+class SPLIT3R_OT_write_threadwell_request(Operator):
+    bl_idname = "split3r.write_threadwell_request"
+    bl_label = "Send Request to Threadwell"
+    bl_description = "Write a JSON request that Threadwell can read to run Blender/add-on tests"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        settings = context.scene.split3r_settings
+        test_file = bpy.path.abspath(settings.ai_test_file).strip()
+        if not test_file:
+            self.report({"ERROR"}, "Indicá primero la ruta del archivo a probar.")
+            return {"CANCELLED"}
+
+        request_path = bpy.path.abspath(settings.ai_request_path).strip()
+        if not request_path:
+            request_path = str(Path.home() / "split3r_blender_request.json")
+
+        request = {
+            "kind": "split3r_blender_test_request",
+            "version": 1,
+            "test_file": test_file,
+            "prompt": settings.ai_prompt,
+            "smart_angle": settings.smart_angle,
+            "smart_step_angle": settings.smart_step_angle,
+            "plug_depth": settings.plug_depth,
+            "socket_clearance": settings.socket_clearance,
+            "save_imported_stl": settings.save_imported_stl,
+            "blend_file": bpy.data.filepath,
+            "addon_module": "blender_split3r_addon",
+        }
+
+        try:
+            Path(request_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(request_path).write_text(json.dumps(request, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            self.report({"ERROR"}, f"No se pudo guardar el request: {exc}")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Request para Threadwell guardado: {request_path}")
+        return {"FINISHED"}
+
+
 class SPLIT3R_OT_smart_shell_select(Operator):
     bl_idname = "split3r.smart_shell_select"
     bl_label = "Smart Shell Select"
@@ -419,10 +494,21 @@ class SPLIT3R_PT_panel(Panel):
         layout.label(text="4) Export")
         layout.operator("split3r.export_selected_stl", icon="EXPORT")
 
+        layout.separator()
+        box = layout.box()
+        box.label(text="5) Threadwell Test Request")
+        box.prop(settings, "ai_test_file")
+        box.operator("split3r.pick_ai_test_file", icon="FILE_FOLDER")
+        box.prop(settings, "ai_prompt")
+        box.prop(settings, "ai_request_path")
+        box.operator("split3r.write_threadwell_request", icon="TEXT")
+
 
 _CLASSES = (
     Split3rSettings,
     SPLIT3R_OT_import_3mf,
+    SPLIT3R_OT_pick_ai_test_file,
+    SPLIT3R_OT_write_threadwell_request,
     SPLIT3R_OT_smart_shell_select,
     SPLIT3R_OT_create_plug_socket,
     SPLIT3R_OT_export_selected_stl,
