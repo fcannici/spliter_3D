@@ -21,6 +21,8 @@ dist/
 .venv-build/
 frames/
 frames*/
+blender_test_outputs/
+tmp_split3r_request*.json
 audio.wav
 
 # OS/editor
