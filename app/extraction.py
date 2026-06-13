@@ -10,7 +10,7 @@ from .mesh_io import validate_polydata
 
 _ORIGINAL_CELL_ID = "_split3r_original_cell_id"
 _SELECTION_CLOSING_STEPS = 5
-_SELECTION_OPENING_STEPS = 3
+_SELECTION_OPENING_STEPS = 5
 _MIN_OPENED_SELECTION_RATIO = 0.12
 
 
@@ -168,7 +168,7 @@ def _open_selection(cells: set[int], adjacency: list[set[int]], steps: int = _SE
         eroded = {
             cell
             for cell in opened
-            if sum((neighbor in opened) for neighbor in adjacency[cell]) >= 2
+            if sum((neighbor in opened) for neighbor in adjacency[cell]) >= max(2, min(3, len(adjacency[cell])))
         }
         if len(eroded) < max(8, int(len(original) * _MIN_OPENED_SELECTION_RATIO)):
             return original
@@ -383,8 +383,16 @@ def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) ->
         wall_pts.extend(bottom_points)
         n = len(top_points)
 
+        loop_edge_lengths = np.linalg.norm(np.roll(top_points, -1, axis=0) - top_points, axis=1)
+        median_edge = float(np.median(loop_edge_lengths)) if len(loop_edge_lengths) else 0.0
+        max_wall_edge = max(float(np.percentile(loop_edge_lengths, 90) * 3.0), median_edge * 8.0, 1e-6)
+
         for i in range(n):
             j = (i + 1) % n
+            # Badly ordered scan boundaries occasionally contain one huge bridge edge; drawing a
+            # side wall on that edge creates the long black needles still visible in captura4.
+            if float(loop_edge_lengths[i]) > max_wall_edge:
+                continue
             top_i = wall_base + i
             top_j = wall_base + j
             bot_i = wall_base + n + i
