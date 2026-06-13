@@ -9,6 +9,7 @@ from scipy.spatial import Delaunay
 from .mesh_io import validate_polydata
 
 _ORIGINAL_CELL_ID = "_split3r_original_cell_id"
+_SELECTION_CLOSING_STEPS = 5
 _SELECTION_OPENING_STEPS = 3
 _MIN_OPENED_SELECTION_RATIO = 0.12
 
@@ -98,6 +99,56 @@ def _largest_cell_component(cells: set[int], adjacency: list[set[int]]) -> set[i
         if len(component) > len(largest):
             largest = component
     return largest
+
+
+def _close_selection_holes(cells: set[int], adjacency: list[set[int]], steps: int = _SELECTION_CLOSING_STEPS) -> set[int]:
+    """Fill small fully enclosed misses inside the brush selection.
+
+    In the captures, many curtains come from inner boundary loops: the brush selected a broad
+    patch but skipped tiny strips/triangles inside it, so the extractor built vertical walls
+    around those misses. We fill only small complement components; the large outside component
+    remains untouched, so the selected silhouette does not grow uncontrollably.
+    """
+    closed = set(cells)
+    if not closed:
+        return closed
+
+    all_cells = set(range(len(adjacency)))
+    max_hole_size = max(24, min(600, int(len(closed) * 0.18)))
+
+    for _ in range(steps):
+        unselected = all_cells - closed
+        seen: set[int] = set()
+        additions: set[int] = set()
+
+        for start in list(unselected):
+            if start in seen:
+                continue
+            component = {start}
+            seen.add(start)
+            queue: deque[int] = deque([start])
+            touches_selection = False
+            too_large = False
+
+            while queue:
+                cell = queue.popleft()
+                for neighbor in adjacency[cell]:
+                    if neighbor in closed:
+                        touches_selection = True
+                    elif neighbor not in seen:
+                        seen.add(neighbor)
+                        component.add(neighbor)
+                        if len(component) > max_hole_size:
+                            too_large = True
+                        queue.append(neighbor)
+
+            if touches_selection and not too_large:
+                additions.update(component)
+
+        if not additions:
+            break
+        closed.update(additions)
+    return closed
 
 
 def _open_selection(cells: set[int], adjacency: list[set[int]], steps: int = _SELECTION_OPENING_STEPS) -> set[int]:
@@ -308,10 +359,11 @@ def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) ->
     if not loop_data:
         raise ValueError("El borde de la selección no tiene área suficiente para generar una tapa limpia.")
 
-    # Keep the real cut loops and discard tiny noisy loops from scan artifacts/teeth.
-    max_area = max(area for area, _ in loop_data)
-    loop_data = [(area, pts) for area, pts in loop_data if area >= max_area * 0.08 and len(pts) >= 8]
-    if not loop_data:
+    # Keep only the dominant outer cut loop. Secondary loops are usually holes left by
+    # imperfect brush selection on teeth/scan noise; creating walls around them produces the
+    # visible curtains/fins shown in the QA captures.
+    loop_data = [max(loop_data, key=lambda item: item[0])]
+    if loop_data[0][1].shape[0] < 8:
         raise ValueError("Solo se encontraron loops de borde pequeños o ruidosos.")
 
     wall_pts: list[np.ndarray] = []
@@ -370,9 +422,10 @@ def extract_plug_socket(current_mesh: pv.PolyData, selected_cells: set[int], ext
     # the grey socket and the cyan plug while keeping the dominant selected patch.
     adjacency = _cell_edge_adjacency(current_mesh)
     valid_selection = _largest_cell_component(valid_selection, adjacency)
+    valid_selection = _close_selection_holes(valid_selection, adjacency)
     opened_selection = _open_selection(valid_selection, adjacency)
     if opened_selection:
-        valid_selection = opened_selection
+        valid_selection = _close_selection_holes(opened_selection, adjacency)
 
     # Preserve original cell IDs so cleaning disconnected islands also updates the removed cells.
     current_mesh.cell_data[_ORIGINAL_CELL_ID] = np.arange(current_mesh.n_cells)
