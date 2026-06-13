@@ -62,7 +62,12 @@ class Split3rSettings(PropertyGroup):
     )
     keep_cutter: BoolProperty(
         name="Keep cutter",
-        description="Keep the hidden cutter object after socket generation",
+        description="Keep the cutter object after socket generation. Disable to avoid clutter when applying the boolean",
+        default=False,
+    )
+    cleanup_previous_outputs: BoolProperty(
+        name="Clean previous outputs",
+        description="Delete old Split3r plug/cutter objects before creating a new extraction",
         default=True,
     )
     apply_output_modifiers: BoolProperty(
@@ -121,6 +126,21 @@ def _ensure_mesh_object(context):
     if obj is None or obj.type != "MESH":
         raise RuntimeError("Seleccioná un objeto de malla.")
     return obj
+
+
+def _is_split3r_generated(obj):
+    return obj is not None and (obj.name.startswith("Split3r_Plug") or obj.name.startswith("Split3r_Socket_Cutter"))
+
+
+def _cleanup_split3r_outputs(except_obj=None):
+    removed = 0
+    for obj in list(bpy.data.objects):
+        if obj is except_obj:
+            continue
+        if _is_split3r_generated(obj):
+            bpy.data.objects.remove(obj, do_unlink=True)
+            removed += 1
+    return removed
 
 
 def _selected_face_indices(obj):
@@ -701,6 +721,19 @@ class SPLIT3R_OT_shrink_smart_selection(Operator):
         return {"FINISHED"}
 
 
+class SPLIT3R_OT_clean_outputs(Operator):
+    bl_idname = "split3r.clean_outputs"
+    bl_label = "Clean Split3r Outputs"
+    bl_description = "Delete generated Split3r plug/cutter objects from the scene"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        active = context.object
+        removed = _cleanup_split3r_outputs(except_obj=active if not _is_split3r_generated(active) else None)
+        self.report({"INFO"}, f"Split3r cleanup: {removed} objetos generados eliminados.")
+        return {"FINISHED"}
+
+
 class SPLIT3R_OT_create_plug_socket(Operator):
     bl_idname = "split3r.create_plug_socket"
     bl_label = "Create Plug + Socket"
@@ -710,12 +743,17 @@ class SPLIT3R_OT_create_plug_socket(Operator):
     def execute(self, context):
         source = _ensure_mesh_object(context)
         settings = context.scene.split3r_settings
+        if _is_split3r_generated(source):
+            self.report({"ERROR"}, "El objeto activo ya es una salida Split3r. Seleccioná el mesh original para crear un nuevo plug/socket.")
+            return {"CANCELLED"}
         face_indices = _selected_face_indices(source)
         if not face_indices:
             self.report({"ERROR"}, "No hay caras seleccionadas.")
             return {"CANCELLED"}
 
         bpy.ops.object.mode_set(mode="OBJECT")
+        if settings.cleanup_previous_outputs:
+            _cleanup_split3r_outputs(except_obj=source)
         source.select_set(True)
         context.view_layer.objects.active = source
 
@@ -763,6 +801,9 @@ class SPLIT3R_OT_create_plug_socket(Operator):
                     bpy.data.objects.remove(cutter, do_unlink=True)
             except Exception as exc:
                 self.report({"WARNING"}, f"Boolean creado pero no se pudo aplicar: {exc}")
+        elif not settings.keep_cutter:
+            cutter.hide_viewport = True
+            cutter.hide_render = True
 
         plug.select_set(True)
         source.select_set(True)
@@ -852,11 +893,14 @@ class SPLIT3R_PT_panel(Panel):
         layout.prop(settings, "socket_clearance")
         layout.prop(settings, "apply_boolean")
         layout.prop(settings, "keep_cutter")
+        layout.prop(settings, "cleanup_previous_outputs")
         layout.prop(settings, "apply_output_modifiers")
         layout.prop(settings, "fill_internal_patch_holes")
         layout.prop(settings, "repair_outputs")
         layout.operator("split3r.create_plug_socket", icon="MOD_BOOLEAN")
-        layout.operator("split3r.repair_active_mesh", icon="MOD_REMESH")
+        row = layout.row(align=True)
+        row.operator("split3r.repair_active_mesh", text="Repair Active", icon="MOD_REMESH")
+        row.operator("split3r.clean_outputs", text="Clean Outputs", icon="TRASH")
 
         layout.separator()
         layout.label(text="4) Export")
@@ -883,6 +927,7 @@ _CLASSES = (
     SPLIT3R_OT_smart_shell_select,
     SPLIT3R_OT_grow_smart_selection,
     SPLIT3R_OT_shrink_smart_selection,
+    SPLIT3R_OT_clean_outputs,
     SPLIT3R_OT_create_plug_socket,
     SPLIT3R_OT_repair_active_mesh,
     SPLIT3R_OT_export_selected_stl,
