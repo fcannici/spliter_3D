@@ -72,49 +72,15 @@ def extract_plug_socket(
     extrude_depth: float,
     socket_clearance: float = 0.2,
 ) -> tuple[pv.PolyData, pv.PolyData]:
-    """Return (plug_mesh, body_with_socket_mesh) for the selected cell region.
+    """Compatibility wrapper for the interlocking insert workflow."""
+    from .interlocking import create_interlocking_insert
 
-    The plug keeps the requested extrusion depth. The body/socket is produced by
-    subtracting a slightly larger cutter from the original mesh, giving the
-    negative cavity a configurable FDM clearance/buffer.
-    """
-    validate_polydata(current_mesh)
-    if not selected_cells:
-        raise ValueError("No hay caras seleccionadas para extraer.")
-    if extrude_depth <= 0:
-        raise ValueError("El grosor de extrusión debe ser mayor a cero.")
-    if socket_clearance < 0:
-        raise ValueError("El buffer del socket no puede ser negativo.")
-
-    valid_selection = {int(c) for c in selected_cells if 0 <= int(c) < current_mesh.n_cells}
-    if not valid_selection:
-        raise ValueError("La selección no contiene caras válidas.")
-    if len(valid_selection) >= current_mesh.n_cells:
-        raise ValueError("No se puede extraer el 100% de la malla como socket.")
-
-    part_surface = current_mesh.extract_cells(sorted(valid_selection)).extract_surface(algorithm="dataset_surface").triangulate()
-    if part_surface.n_cells == 0:
-        raise ValueError("La superficie seleccionada está vacía.")
-
-    part_surface = part_surface.compute_normals(auto_orient_normals=True, point_normals=True, cell_normals=True)
-    if "Normals" not in part_surface.point_data:
-        raise ValueError("No se pudieron calcular normales para la selección.")
-
-    plug_mesh = _solid_from_offsets(part_surface, outward_offset=0.0, inward_offset=extrude_depth)
-
-    # The cutter extends slightly outward to avoid coplanar boolean surfaces and
-    # inward by depth + clearance, creating the requested negative buffer.
-    socket_cutter = _solid_from_offsets(
-        part_surface,
-        outward_offset=socket_clearance,
-        inward_offset=float(extrude_depth) + float(socket_clearance),
+    result = create_interlocking_insert(
+        current_mesh,
+        selected_cells,
+        depth=extrude_depth,
+        clearance=socket_clearance,
+        backend="auto",
+        allow_surface_fallback=True,
     )
-
-    try:
-        body_mesh = current_mesh.triangulate().boolean_difference(socket_cutter, progress_bar=False).clean().triangulate()
-    except Exception:
-        body_mesh = _fallback_socket_body(current_mesh, valid_selection, socket_cutter)
-
-    validate_polydata(plug_mesh)
-    validate_polydata(body_mesh)
-    return plug_mesh, body_mesh
+    return result.insert_mesh, result.body_mesh

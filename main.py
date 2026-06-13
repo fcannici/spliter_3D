@@ -39,7 +39,7 @@ from PyQt6.QtWidgets import (
 from pyvistaqt import QtInteractor
 from scipy.spatial import KDTree
 
-from app.extraction import extract_plug_socket
+from app.interlocking import create_interlocking_insert
 from app.mesh_io import load_trimesh, polydata_to_trimesh, trimesh_to_polydata, validate_polydata
 from app.selection import build_adjacency_dict, compute_smart_shell_region
 
@@ -281,7 +281,7 @@ class Split3rClone(QMainWindow):
         self.btn_invert.setEnabled(False)
         self.panel_layout.addWidget(self.btn_invert)
 
-        self.btn_extract = QPushButton("EXTRACT PLUG & SOCKET")
+        self.btn_extract = QPushButton("EXTRACT INTERLOCKING INSERT")
         self.btn_extract.clicked.connect(self.extract_part)
         self.btn_extract.setEnabled(False)
         self.btn_extract.setMinimumHeight(50)
@@ -486,15 +486,20 @@ class Split3rClone(QMainWindow):
 
     def extract_part(self):
         try:
-            self.set_status(f"Building SOLID Plug & Socket ({self.extrude_depth}mm, buffer {self.socket_clearance}mm)...")
+            self.set_status(f"Building interlocking insert ({self.extrude_depth}mm, buffer {self.socket_clearance}mm)...")
             QApplication.processEvents()
             self.undo_stack.append((self.current_mesh.copy(), list(self.extracted_parts)))
-            plug_mesh, body_mesh = extract_plug_socket(
+            result = create_interlocking_insert(
                 self.current_mesh,
                 self.selected_cells,
-                self.extrude_depth,
-                socket_clearance=self.socket_clearance,
+                depth=self.extrude_depth,
+                clearance=self.socket_clearance,
+                backend="auto",
+                allow_surface_fallback=True,
             )
+            plug_mesh, body_mesh = result.insert_mesh, result.body_mesh
+            for warning in result.warnings:
+                logger.warning(warning)
             self.extracted_parts.append(plug_mesh)
             self.plotter.add_mesh(plug_mesh, color="cyan", pbr=True, name=f"Part_{len(self.extracted_parts)}")
             self.current_mesh = body_mesh
@@ -502,7 +507,10 @@ class Split3rClone(QMainWindow):
             self.rebuild_topology()
             self.add_main_mesh_actor(reset_camera=False)
             self.btn_move.setEnabled(True)
-            self.set_status(f"SUCCESS: Solid Plug & Socket created ({self.extrude_depth}mm).")
+            status = f"SUCCESS: Interlocking insert created ({self.extrude_depth}mm, buffer {self.socket_clearance}mm, backend {result.boolean_backend})."
+            if result.warnings:
+                status += " Revisar warnings en log."
+            self.set_status(status)
         except Exception as e:
             if self.undo_stack:
                 self.undo_stack.pop()
