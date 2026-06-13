@@ -27,7 +27,7 @@ El prototipo PyVista/VTK demostró que la selección funciona, pero la generaci�
 3. Entrar a `Edit Mode` y seleccionar una cara semilla.
 4. Usar **Smart Shell Select** con `Smart angle` y `Step angle`. `Smart angle` limita contra la normal inicial y `Step angle` limita cada salto entre caras; esto evita que seleccione toda la miniatura por curvatura gradual.
 5. Ajustar la selección con **Grow** / **Shrink** o con los shortcuts `Ctrl + rueda arriba/abajo` en Edit Mode. Por defecto Grow expande libremente por anillos conectados de la superficie para que pueda envolver la malla; activar **Angle-limited grow** solo si querés que frene en cambios bruscos de normal.
-6. Usar **Create Plug + Socket**. Por defecto aplica Solidify al plug/cutter y repara agujeros restantes en las mallas generadas para que la pieza exportada sea geometría real, no solo un modifier preview.
+6. Usar **Create Plug + Socket**. Por defecto aplica Solidify al plug/cutter como geometría real. El cutter del socket usa además un offset de `Socket clearance` para respetar el encastre físico. No conviene cerrar automáticamente todos los agujeros: algunos son parte del positivo/negativo y deben quedar como alivios de encastre.
 6. Por defecto el boolean no se aplica inmediatamente: se crea un modifier en el body y un cutter visible en modo wire para inspeccionar.
 7. Si el resultado se ve correcto, aplicar el modifier o activar `Apply boolean`.
 8. Exportar plug/body como STL.

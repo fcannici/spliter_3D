@@ -71,14 +71,14 @@ class Split3rSettings(PropertyGroup):
         default=True,
     )
     fill_internal_patch_holes: BoolProperty(
-        name="Fill internal patch holes",
-        description="Before Solidify, cap smaller boundary loops inside the selected patch. Keeps the largest outer cut loop open",
-        default=True,
+        name="Experimental: fill selected holes",
+        description="Experimental. Usually keep OFF: internal holes are part of the positive/negative fit and should not be blindly capped",
+        default=False,
     )
     repair_outputs: BoolProperty(
         name="Repair generated meshes",
-        description="Fill remaining boundary holes and recalculate normals on generated plug/cutter meshes",
-        default=True,
+        description="Experimental. Fill remaining boundary holes and recalculate normals on generated plug/cutter meshes",
+        default=False,
     )
     grow_steps: IntProperty(
         name="Grow steps",
@@ -169,6 +169,15 @@ def _add_solidify(obj, thickness, name="Split3r Solidify"):
     mod.use_even_offset = True
     mod.use_rim_only = False
     mod.show_on_cage = True
+    return mod
+
+
+def _add_clearance_displace(obj, clearance, name="Split3r Socket Clearance"):
+    if clearance <= 0:
+        return None
+    mod = obj.modifiers.new(name, "DISPLACE")
+    mod.strength = clearance
+    mod.direction = "NORMAL"
     return mod
 
 
@@ -724,12 +733,15 @@ class SPLIT3R_OT_create_plug_socket(Operator):
         cutter.data.name = f"Split3r_Socket_CutterMesh_{source.data.name[:40]}"
         context.collection.objects.link(cutter)
         cutter.modifiers.clear()
-        cutter_mod = _add_solidify(cutter, settings.plug_depth + settings.socket_clearance, "Split3r Socket Cutter Thickness")
+        cutter_mod = _add_solidify(cutter, settings.plug_depth, "Split3r Socket Cutter Thickness")
+        clearance_mod = _add_clearance_displace(cutter, settings.socket_clearance, "Split3r Socket Clearance")
 
         repair_notes = []
         if settings.apply_output_modifiers:
             _apply_modifier(plug, plug_mod.name)
             _apply_modifier(cutter, cutter_mod.name)
+            if clearance_mod is not None:
+                _apply_modifier(cutter, clearance_mod.name)
         if settings.repair_outputs:
             repair_notes.append((plug.name, _repair_mesh_object(plug)))
             repair_notes.append((cutter.name, _repair_mesh_object(cutter)))
