@@ -9,22 +9,34 @@ bl_info = {
 }
 
 import math
+import os
+import xml.etree.ElementTree as ET
 from collections import deque
+from pathlib import Path
+from zipfile import ZipFile
 
 import bpy
 import bmesh
-from bpy.props import BoolProperty, FloatProperty, PointerProperty
+from bpy.props import BoolProperty, FloatProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
+from bpy_extras.io_utils import ImportHelper
 from mathutils import Vector
 
 
 class Split3rSettings(PropertyGroup):
     smart_angle: FloatProperty(
         name="Smart angle",
-        description="Maximum angle in degrees between neighboring face normals for shell selection",
-        default=30.0,
+        description="Maximum angle in degrees against the seed face normal",
+        default=18.0,
         min=1.0,
         max=90.0,
+    )
+    smart_step_angle: FloatProperty(
+        name="Step angle",
+        description="Maximum angle in degrees between each face and its direct neighbor",
+        default=10.0,
+        min=1.0,
+        max=60.0,
     )
     plug_depth: FloatProperty(
         name="Plug thickness",
@@ -51,6 +63,11 @@ class Split3rSettings(PropertyGroup):
         name="Keep cutter",
         description="Keep the hidden cutter object after socket generation",
         default=True,
+    )
+    save_imported_stl: BoolProperty(
+        name="Save STL copy",
+        description="After importing a 3MF, also save an STL copy next to the source file",
+        default=False,
     )
 
 
@@ -110,6 +127,134 @@ def _add_solidify(obj, thickness, name="Split3r Solidify"):
     return mod
 
 
+def _parse_3mf_transform(value: str | None):
+    if not value:
+        return None
+    try:
+        nums = [float(item) for item in value.split()]
+    except ValueError:
+        return None
+    if len(nums) != 12:
+        return None
+    # 3MF stores a 3x4 row-major matrix. The last three values are translation in most
+    # Bambu/Prusa project files. We apply full affine transform to be safe.
+    return nums
+
+
+def _apply_3mf_transform(point, transform):
+    if transform is None:
+        return point
+    x, y, z = point
+    return (
+        x * transform[0] + y * transform[3] + z * transform[6] + transform[9],
+        x * transform[1] + y * transform[4] + z * transform[7] + transform[10],
+        x * transform[2] + y * transform[5] + z * transform[8] + transform[11],
+    )
+
+
+def _load_3mf_meshes(filepath):
+    ns = {"m": "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"}
+    meshes = []
+    with ZipFile(filepath) as archive:
+        names = archive.namelist()
+        root_transform = None
+        if "3D/3dmodel.model" in names:
+            root = ET.fromstring(archive.read("3D/3dmodel.model"))
+            build_item = root.find(".//m:build/m:item", ns)
+            if build_item is not None:
+                root_transform = _parse_3mf_transform(build_item.attrib.get("transform"))
+
+        model_names = [name for name in names if name.lower().endswith(".model") and name.startswith("3D/Objects/")]
+        if not model_names and "3D/3dmodel.model" in names:
+            model_names = ["3D/3dmodel.model"]
+
+        for model_name in model_names:
+            root = ET.fromstring(archive.read(model_name))
+            for obj in root.findall(".//m:object", ns):
+                mesh_node = obj.find("m:mesh", ns)
+                if mesh_node is None:
+                    continue
+                verts_node = mesh_node.find("m:vertices", ns)
+                tris_node = mesh_node.find("m:triangles", ns)
+                if verts_node is None or tris_node is None:
+                    continue
+                vertices = []
+                for vertex in verts_node.findall("m:vertex", ns):
+                    point = (
+                        float(vertex.attrib.get("x", "0")),
+                        float(vertex.attrib.get("y", "0")),
+                        float(vertex.attrib.get("z", "0")),
+                    )
+                    vertices.append(_apply_3mf_transform(point, root_transform))
+                faces = []
+                for tri in tris_node.findall("m:triangle", ns):
+                    try:
+                        faces.append([int(tri.attrib["v1"]), int(tri.attrib["v2"]), int(tri.attrib["v3"])])
+                    except (KeyError, ValueError):
+                        continue
+                if vertices and faces:
+                    meshes.append((model_name, vertices, faces))
+    return meshes
+
+
+def _export_object_stl(obj, filepath):
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for item in bpy.context.scene.objects:
+        item.select_set(False)
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    if hasattr(bpy.ops.wm, "stl_export"):
+        bpy.ops.wm.stl_export(filepath=filepath, export_selected_objects=True)
+    else:
+        bpy.ops.export_mesh.stl(filepath=filepath, use_selection=True)
+
+
+class SPLIT3R_OT_import_3mf(Operator, ImportHelper):
+    bl_idname = "split3r.import_3mf"
+    bl_label = "Import 3MF"
+    bl_description = "Import a 3MF/Bambu project directly as Blender mesh and optionally save an STL copy"
+    bl_options = {"REGISTER", "UNDO"}
+
+    filename_ext = ".3mf"
+    filter_glob: StringProperty(default="*.3mf", options={"HIDDEN"})
+
+    def execute(self, context):
+        settings = context.scene.split3r_settings
+        try:
+            meshes = _load_3mf_meshes(self.filepath)
+        except Exception as exc:
+            self.report({"ERROR"}, f"No se pudo leer el 3MF: {exc}")
+            return {"CANCELLED"}
+        if not meshes:
+            self.report({"ERROR"}, "El 3MF no contiene mallas compatibles.")
+            return {"CANCELLED"}
+
+        created = []
+        base = Path(self.filepath).stem
+        for index, (_model_name, vertices, faces) in enumerate(meshes, start=1):
+            name = base if len(meshes) == 1 else f"{base}_{index}"
+            mesh = bpy.data.meshes.new(f"{name}_mesh")
+            mesh.from_pydata(vertices, [], faces)
+            mesh.update(calc_edges=True)
+            obj = bpy.data.objects.new(name, mesh)
+            context.collection.objects.link(obj)
+            created.append(obj)
+
+        for obj in context.scene.objects:
+            obj.select_set(False)
+        for obj in created:
+            obj.select_set(True)
+        context.view_layer.objects.active = created[0]
+
+        if settings.save_imported_stl:
+            stl_path = os.path.splitext(self.filepath)[0] + ".stl"
+            _export_object_stl(created[0], stl_path)
+            self.report({"INFO"}, f"3MF importado y STL guardado: {stl_path}")
+        else:
+            self.report({"INFO"}, f"3MF importado: {sum(len(obj.data.polygons) for obj in created)} caras.")
+        return {"FINISHED"}
+
+
 class SPLIT3R_OT_smart_shell_select(Operator):
     bl_idname = "split3r.smart_shell_select"
     bl_label = "Smart Shell Select"
@@ -133,7 +278,9 @@ class SPLIT3R_OT_smart_shell_select(Operator):
                 return {"CANCELLED"}
             active = selected[-1]
 
-        max_angle = math.radians(settings.smart_angle)
+        seed_normal = active.normal.copy()
+        max_seed_angle = math.radians(settings.smart_angle)
+        max_step_angle = math.radians(settings.smart_step_angle)
         visited = {active}
         queue = deque([active])
         active.select_set(True)
@@ -141,13 +288,20 @@ class SPLIT3R_OT_smart_shell_select(Operator):
         while queue:
             face = queue.popleft()
             for edge in face.edges:
+                # Only cross real manifold edges. This avoids jumping across non-manifold/internal
+                # Bambu surfaces that touch at a boundary or duplicated shell.
+                if len(edge.link_faces) != 2:
+                    continue
                 for neighbor in edge.link_faces:
                     if neighbor is face or neighbor in visited:
                         continue
-                    if face.normal.angle(neighbor.normal, 0.0) <= max_angle:
-                        neighbor.select_set(True)
-                        visited.add(neighbor)
-                        queue.append(neighbor)
+                    if neighbor.normal.angle(seed_normal, 0.0) > max_seed_angle:
+                        continue
+                    if face.normal.angle(neighbor.normal, 0.0) > max_step_angle:
+                        continue
+                    neighbor.select_set(True)
+                    visited.add(neighbor)
+                    queue.append(neighbor)
 
         bmesh.update_edit_mesh(obj.data)
         self.report({"INFO"}, f"Smart Shell: {len(visited)} caras seleccionadas.")
@@ -243,12 +397,18 @@ class SPLIT3R_PT_panel(Panel):
         layout = self.layout
         settings = context.scene.split3r_settings
 
-        layout.label(text="1) Selección")
+        layout.label(text="1) Import")
+        layout.prop(settings, "save_imported_stl")
+        layout.operator("split3r.import_3mf", icon="IMPORT")
+
+        layout.separator()
+        layout.label(text="2) Selección")
         layout.prop(settings, "smart_angle")
+        layout.prop(settings, "smart_step_angle")
         layout.operator("split3r.smart_shell_select", icon="RESTRICT_SELECT_OFF")
 
         layout.separator()
-        layout.label(text="2) Plug / Socket")
+        layout.label(text="3) Plug / Socket")
         layout.prop(settings, "plug_depth")
         layout.prop(settings, "socket_clearance")
         layout.prop(settings, "apply_boolean")
@@ -256,12 +416,13 @@ class SPLIT3R_PT_panel(Panel):
         layout.operator("split3r.create_plug_socket", icon="MOD_BOOLEAN")
 
         layout.separator()
-        layout.label(text="3) Export")
+        layout.label(text="4) Export")
         layout.operator("split3r.export_selected_stl", icon="EXPORT")
 
 
 _CLASSES = (
     Split3rSettings,
+    SPLIT3R_OT_import_3mf,
     SPLIT3R_OT_smart_shell_select,
     SPLIT3R_OT_create_plug_socket,
     SPLIT3R_OT_export_selected_stl,

@@ -22,10 +22,10 @@ El prototipo PyVista/VTK demostró que la selección funciona, pero la generaci�
 
 ## Flujo inicial
 
-1. Importar el `.3mf`/`.stl` en Blender.
-2. Seleccionar el objeto.
+1. Usar **Import 3MF** desde el panel Split3r para cargar un `.3mf`/Bambu project. Opcionalmente activar **Save STL copy** para guardar una copia STL junto al `.3mf`.
+2. Seleccionar el objeto importado.
 3. Entrar a `Edit Mode` y seleccionar una cara semilla.
-4. Usar **Smart Shell Select** con el ángulo deseado.
+4. Usar **Smart Shell Select** con `Smart angle` y `Step angle`. `Smart angle` limita contra la normal inicial y `Step angle` limita cada salto entre caras; esto evita que seleccione toda la miniatura por curvatura gradual.
 5. Usar **Create Plug + Socket**.
 6. Por defecto el boolean no se aplica inmediatamente: se crea un modifier en el body y un cutter visible en modo wire para inspeccionar.
 7. Si el resultado se ve correcto, aplicar el modifier o activar `Apply boolean`.
