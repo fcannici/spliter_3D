@@ -84,8 +84,15 @@ class Split3rSettings(PropertyGroup):
     )
     grow_use_angle_limits: BoolProperty(
         name="Angle-limited grow",
-        description="When enabled, Grow uses Smart/Step angle limits. When disabled, Ctrl+Wheel expands freely over the connected surface",
+        description="When enabled, Grow uses strict Smart/Step angle limits. Keep disabled for normal Ctrl+Wheel wrapping",
         default=False,
+    )
+    grow_boundary_angle: FloatProperty(
+        name="Grow boundary",
+        description="Maximum local angle Ctrl+Wheel can cross when Angle-limited grow is disabled. Higher wraps more; lower prevents spillover",
+        default=35.0,
+        min=5.0,
+        max=90.0,
     )
     save_imported_stl: BoolProperty(
         name="Save STL copy",
@@ -537,7 +544,8 @@ class SPLIT3R_OT_reset_selection_settings(Operator):
         settings.smart_step_angle = 10.0
         settings.grow_steps = 1
         settings.grow_use_angle_limits = False
-        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Angle-limited OFF.")
+        settings.grow_boundary_angle = 35.0
+        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 35, Angle-limited OFF.")
         return {"FINISHED"}
 
 
@@ -562,6 +570,7 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
 
         max_step_angle = math.radians(settings.smart_step_angle)
         max_seed_angle = math.radians(settings.smart_angle)
+        max_boundary_angle = math.radians(settings.grow_boundary_angle)
         avg = Vector((0.0, 0.0, 0.0))
         if settings.grow_use_angle_limits:
             for face in selected:
@@ -576,17 +585,22 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
             to_add = set()
             for face in selected:
                 for edge in face.edges:
-                    # Ctrl+Wheel must behave like Blender's region grow: follow every face
-                    # connected by an edge so the selection can wrap up/down/sideways.
-                    # Angle limits are optional because they intentionally stop at curves.
+                    # Ctrl+Wheel should wrap along the same connected surface, but it must
+                    # not leak through boundary/non-manifold edges or across sharp folds.
+                    # That was the source of the selection spillover while scrolling.
+                    if len(edge.link_faces) != 2:
+                        continue
                     for neighbor in edge.link_faces:
                         if neighbor is face or neighbor in selected:
                             continue
+                        local_angle = face.normal.angle(neighbor.normal, 0.0)
                         if settings.grow_use_angle_limits:
-                            if face.normal.angle(neighbor.normal, 0.0) > max_step_angle:
+                            if local_angle > max_step_angle:
                                 continue
                             if neighbor.normal.angle(avg, 0.0) > max_seed_angle:
                                 continue
+                        elif local_angle > max_boundary_angle:
+                            continue
                         to_add.add(neighbor)
             if not to_add:
                 break
@@ -753,6 +767,7 @@ class SPLIT3R_PT_panel(Panel):
         layout.prop(settings, "smart_step_angle")
         layout.prop(settings, "grow_steps")
         layout.prop(settings, "grow_use_angle_limits")
+        layout.prop(settings, "grow_boundary_angle")
         layout.operator("split3r.reset_selection_settings", icon="LOOP_BACK")
         layout.operator("split3r.smart_shell_select", icon="RESTRICT_SELECT_OFF")
         row = layout.row(align=True)
