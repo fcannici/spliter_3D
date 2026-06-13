@@ -305,6 +305,14 @@ class SPLIT3R_OT_write_threadwell_request(Operator):
         if not request_path:
             request_path = str(Path.home() / "split3r_blender_request.json")
 
+        selected_face_indices = []
+        active = context.object
+        if active is not None and active.type == "MESH":
+            try:
+                selected_face_indices = _selected_face_indices(active)
+            except Exception:
+                selected_face_indices = []
+
         request = {
             "kind": "split3r_blender_test_request",
             "version": 1,
@@ -316,6 +324,9 @@ class SPLIT3R_OT_write_threadwell_request(Operator):
             "socket_clearance": settings.socket_clearance,
             "save_imported_stl": settings.save_imported_stl,
             "blend_file": bpy.data.filepath,
+            "active_object": active.name if active is not None else "",
+            "selected_face_count": len(selected_face_indices),
+            "selected_face_indices": selected_face_indices,
             "addon_module": "blender_split3r_addon",
         }
 
@@ -401,14 +412,15 @@ class SPLIT3R_OT_create_plug_socket(Operator):
         source.select_set(True)
         context.view_layer.objects.active = source
 
-        plug = _mesh_from_faces(source, face_indices, f"{source.name}_Split3r_Plug")
+        short_name = source.name[:40]
+        plug = _mesh_from_faces(source, face_indices, f"Split3r_Plug_{short_name}")
         _add_solidify(plug, settings.plug_depth, "Split3r Plug Thickness")
 
         # Cutter is a separate solidified copy. Slightly thicker than plug for socket clearance.
         cutter = plug.copy()
         cutter.data = plug.data.copy()
-        cutter.name = f"{source.name}_Split3r_Socket_Cutter"
-        cutter.data.name = f"{source.data.name}_Split3r_Socket_CutterMesh"
+        cutter.name = f"Split3r_Socket_Cutter_{short_name}"
+        cutter.data.name = f"Split3r_Socket_CutterMesh_{source.data.name[:40]}"
         context.collection.objects.link(cutter)
         cutter.modifiers.clear()
         _add_solidify(cutter, settings.plug_depth + settings.socket_clearance, "Split3r Socket Cutter Thickness")
