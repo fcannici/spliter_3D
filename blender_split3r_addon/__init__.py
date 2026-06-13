@@ -90,7 +90,7 @@ class Split3rSettings(PropertyGroup):
     grow_boundary_angle: FloatProperty(
         name="Grow boundary",
         description="Maximum local angle Ctrl+Wheel can cross when Angle-limited grow is disabled. Higher wraps more; lower prevents spillover",
-        default=25.0,
+        default=20.0,
         min=5.0,
         max=90.0,
     )
@@ -552,8 +552,8 @@ class SPLIT3R_OT_reset_selection_settings(Operator):
         settings.smart_step_angle = 10.0
         settings.grow_steps = 1
         settings.grow_use_angle_limits = False
-        settings.grow_boundary_angle = 25.0
-        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 25, Angle-limited OFF.")
+        settings.grow_boundary_angle = 20.0
+        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 20, Angle-limited OFF.")
         return {"FINISHED"}
 
 
@@ -583,7 +583,10 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
 
         max_step_angle = math.radians(settings.smart_step_angle)
         max_seed_angle = math.radians(settings.smart_angle)
-        max_boundary_angle = math.radians(settings.grow_boundary_angle)
+        # Hard cap for normal Ctrl+Wheel grow. Organic meshes often have smooth-looking
+        # bridges where a high UI value lets selection leak into the base/body.
+        effective_boundary = min(settings.grow_boundary_angle, 20.0)
+        max_boundary_angle = math.radians(effective_boundary)
         avg = Vector((0.0, 0.0, 0.0))
         if settings.grow_use_angle_limits:
             for face in selected:
