@@ -25,6 +25,52 @@ def _scene_to_mesh(scene: trimesh.Scene) -> trimesh.Trimesh:
     return trimesh.util.concatenate(meshes)
 
 
+def remove_triangle_artifacts(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Remove extreme long/skinny triangles produced by some 3MF slicer/project files.
+
+    The Aztec whistle test file contains thousands of needle triangles (often 10-25 mm long
+    but only hundredths of a millimeter wide). They are already present in the source mesh and
+    later appear as black/cyan hairs after extraction. This filter is conservative: it only
+    removes triangles that are both unusually long for the mesh and extremely skinny, leaving
+    normal rectangular/large faces intact.
+    """
+    if mesh.faces.size == 0:
+        return mesh
+
+    vertices = np.asarray(mesh.vertices, dtype=float)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    triangles = vertices[faces]
+    edge_lengths = np.stack(
+        [
+            np.linalg.norm(triangles[:, 0] - triangles[:, 1], axis=1),
+            np.linalg.norm(triangles[:, 1] - triangles[:, 2], axis=1),
+            np.linalg.norm(triangles[:, 2] - triangles[:, 0], axis=1),
+        ],
+        axis=1,
+    )
+
+    max_edge = edge_lengths.max(axis=1)
+    min_edge = np.maximum(edge_lengths.min(axis=1), 1e-9)
+    aspect_ratio = max_edge / min_edge
+
+    if len(max_edge) >= 100:
+        long_edge_threshold = max(
+            4.0,
+            float(np.median(max_edge) * 12.0),
+            float(np.percentile(max_edge, 90) * 6.0),
+        )
+    else:
+        long_edge_threshold = 4.0
+    artifact_faces = (max_edge > long_edge_threshold) & (aspect_ratio > 20.0)
+    if not np.any(artifact_faces):
+        return mesh
+
+    cleaned = mesh.copy()
+    cleaned.update_faces(~artifact_faces)
+    cleaned.remove_unreferenced_vertices()
+    return cleaned
+
+
 def load_trimesh(filepath: str | Path) -> trimesh.Trimesh:
     """Load STL/OBJ/3MF as a validated, triangular trimesh."""
     path = Path(filepath)
@@ -43,7 +89,7 @@ def load_trimesh(filepath: str | Path) -> trimesh.Trimesh:
     mesh.remove_unreferenced_vertices()
     if mesh.faces.shape[1] != 3:
         raise ValueError("Solo se soportan mallas trianguladas.")
-    return mesh
+    return remove_triangle_artifacts(mesh)
 
 
 def trimesh_to_polydata(mesh: trimesh.Trimesh) -> pv.PolyData:

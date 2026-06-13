@@ -419,6 +419,32 @@ class Split3rClone(QMainWindow):
             self.current_mesh.cell_data["Hover"][:] = 0
             self.update_visuals()
 
+    def filter_visible_brush_indices(self, hit_pos, indices):
+        """Keep sphere-brush selection on the visible shell instead of through the model.
+
+        The previous brush queried a 3D sphere around the picked point. On the Aztec whistle
+        3MF this also selected hidden/internal thin baffles behind the mouth, which later became
+        the cyan/black fins visible in the QA captures. This depth-slab filter keeps cells close
+        to the picked visible surface along the camera ray.
+        """
+        if not indices:
+            return indices
+        camera = self.plotter.renderer.GetActiveCamera()
+        camera_pos = np.array(camera.GetPosition(), dtype=float)
+        hit = np.array(hit_pos, dtype=float)
+        view_dir = hit - camera_pos
+        norm = float(np.linalg.norm(view_dir))
+        if norm <= 1e-9:
+            return indices
+        view_dir /= norm
+
+        centers = self.current_mesh.cell_centers().points[np.asarray(indices, dtype=int)]
+        depth = (centers - hit) @ view_dir
+        max_depth = max(1.0, self.brush_radius * 0.35)
+        min_depth = -max(0.5, self.brush_radius * 0.15)
+        mask = (depth >= min_depth) & (depth <= max_depth)
+        return list(np.asarray(indices, dtype=int)[mask])
+
     def on_mesh_interaction(self, pos):
         hit_pos, cid = self.get_ray_intersection(pos)
         if hit_pos and cid != -1:
@@ -426,6 +452,7 @@ class Split3rClone(QMainWindow):
                 indices = self.compute_smart_shell_region(cid)
             else:
                 indices = self.kdtree.query_ball_point(hit_pos, r=self.brush_radius)
+                indices = self.filter_visible_brush_indices(hit_pos, indices)
             if getattr(self, "is_erasing", False):
                 self.selected_cells.difference_update(indices)
             else:
