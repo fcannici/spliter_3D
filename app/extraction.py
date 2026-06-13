@@ -6,7 +6,7 @@ import numpy as np
 import pyvista as pv
 from scipy.spatial import Delaunay
 
-from .mesh_io import polydata_to_trimesh, remove_triangle_artifacts, trimesh_to_polydata, validate_polydata
+from .mesh_io import validate_polydata
 
 _ORIGINAL_CELL_ID = "_split3r_original_cell_id"
 _SELECTION_CLOSING_STEPS = 5
@@ -417,26 +417,22 @@ def _boundary_edge_count(mesh: pv.PolyData) -> int:
 
 
 def _repair_extracted_mesh(mesh: pv.PolyData, extrude_depth: float) -> pv.PolyData:
-    """Final pass to remove source/output needles and cap small extraction cracks.
+    """Conservative post-process for the generated plug/socket mesh.
 
-    Earlier versions skipped suspicious wall edges, which reduced needles but left visible open
-    holes. This pass keeps the full wall loop, then removes only extreme sliver triangles and
-    fills small boundary cracks left by imperfect scan topology. Large model openings are not
-    targeted; the hole size is tied to extraction thickness.
+    Important: never run global triangle deletion here. The Bambu 3MF test model is watertight
+    because it contains very thin triangles; deleting them from the extracted body makes the whole
+    skull look broken after the first cut. This pass is intentionally limited to VTK clean + small
+    hole filling, which can add missing closure triangles but does not remove source faces.
     """
     if mesh.n_cells == 0:
         return mesh
 
     repaired = mesh.clean().triangulate()
-    try:
-        repaired = trimesh_to_polydata(remove_triangle_artifacts(polydata_to_trimesh(repaired))).clean().triangulate()
-    except Exception:
-        repaired = repaired.clean().triangulate()
-
     hole_size = max(2.5, float(extrude_depth) * 4.0)
     try:
+        before = _boundary_edge_count(repaired)
         filled = repaired.fill_holes(hole_size=hole_size).clean().triangulate()
-        if filled.n_cells > 0 and _boundary_edge_count(filled) <= _boundary_edge_count(repaired):
+        if filled.n_cells > 0 and _boundary_edge_count(filled) <= before:
             repaired = filled
     except Exception:
         pass
