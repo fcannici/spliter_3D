@@ -90,7 +90,7 @@ class Split3rSettings(PropertyGroup):
     grow_boundary_angle: FloatProperty(
         name="Grow boundary",
         description="Maximum local angle Ctrl+Wheel can cross when Angle-limited grow is disabled. Higher wraps more; lower prevents spillover",
-        default=35.0,
+        default=25.0,
         min=5.0,
         max=90.0,
     )
@@ -544,8 +544,8 @@ class SPLIT3R_OT_reset_selection_settings(Operator):
         settings.smart_step_angle = 10.0
         settings.grow_steps = 1
         settings.grow_use_angle_limits = False
-        settings.grow_boundary_angle = 35.0
-        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 35, Angle-limited OFF.")
+        settings.grow_boundary_angle = 25.0
+        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 25, Angle-limited OFF.")
         return {"FINISHED"}
 
 
