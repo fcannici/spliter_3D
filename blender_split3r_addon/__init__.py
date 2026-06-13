@@ -518,6 +518,22 @@ class SPLIT3R_OT_smart_shell_select(Operator):
         return {"FINISHED"}
 
 
+class SPLIT3R_OT_reset_selection_settings(Operator):
+    bl_idname = "split3r.reset_selection_settings"
+    bl_label = "Reset Selection Settings"
+    bl_description = "Restore the approved selection parameters without changing the selection algorithm"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.split3r_settings
+        settings.smart_angle = 18.0
+        settings.smart_step_angle = 10.0
+        settings.grow_steps = 1
+        settings.grow_use_angle_limits = False
+        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Angle-limited OFF.")
+        return {"FINISHED"}
+
+
 class SPLIT3R_OT_grow_smart_selection(Operator):
     bl_idname = "split3r.grow_smart_selection"
     bl_label = "Grow Surface Selection"
@@ -730,6 +746,7 @@ class SPLIT3R_PT_panel(Panel):
         layout.prop(settings, "smart_step_angle")
         layout.prop(settings, "grow_steps")
         layout.prop(settings, "grow_use_angle_limits")
+        layout.operator("split3r.reset_selection_settings", icon="LOOP_BACK")
         layout.operator("split3r.smart_shell_select", icon="RESTRICT_SELECT_OFF")
         row = layout.row(align=True)
         row.operator("split3r.grow_smart_selection", text="Grow", icon="ADD")
@@ -769,6 +786,7 @@ _CLASSES = (
     SPLIT3R_OT_pick_ai_test_file,
     SPLIT3R_OT_write_threadwell_request,
     SPLIT3R_OT_smart_shell_select,
+    SPLIT3R_OT_reset_selection_settings,
     SPLIT3R_OT_grow_smart_selection,
     SPLIT3R_OT_shrink_smart_selection,
     SPLIT3R_OT_create_plug_socket,
