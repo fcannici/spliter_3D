@@ -70,6 +70,11 @@ class Split3rSettings(PropertyGroup):
         description="Apply Solidify on generated plug/cutter so the result is real mesh geometry for inspection/export",
         default=True,
     )
+    fill_internal_patch_holes: BoolProperty(
+        name="Fill internal patch holes",
+        description="Before Solidify, cap smaller boundary loops inside the selected patch. Keeps the largest outer cut loop open",
+        default=True,
+    )
     repair_outputs: BoolProperty(
         name="Repair generated meshes",
         description="Fill remaining boundary holes and recalculate normals on generated plug/cutter meshes",
@@ -165,6 +170,76 @@ def _add_solidify(obj, thickness, name="Split3r Solidify"):
     mod.use_rim_only = False
     mod.show_on_cage = True
     return mod
+
+
+def _boundary_edge_loops(bm):
+    boundary_edges = [edge for edge in bm.edges if edge.is_boundary]
+    edge_to_index = {edge: index for index, edge in enumerate(boundary_edges)}
+    vertex_edges = {}
+    for edge in boundary_edges:
+        for vert in edge.verts:
+            vertex_edges.setdefault(vert, []).append(edge)
+
+    visited = set()
+    loops = []
+    for start in boundary_edges:
+        if start in visited:
+            continue
+        stack = [start]
+        loop = []
+        visited.add(start)
+        while stack:
+            edge = stack.pop()
+            loop.append(edge)
+            for vert in edge.verts:
+                for next_edge in vertex_edges.get(vert, []):
+                    if next_edge not in visited:
+                        visited.add(next_edge)
+                        stack.append(next_edge)
+        loops.append(loop)
+    return loops
+
+
+def _edge_loop_length(edges):
+    return sum((edge.verts[0].co - edge.verts[1].co).length for edge in edges)
+
+
+def _fill_internal_patch_holes(obj):
+    mesh = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+
+    loops = _boundary_edge_loops(bm)
+    notes = {
+        "boundary_loops_before": len(loops),
+        "filled_loops": 0,
+        "filled_faces": 0,
+        "kept_outer_loop_length": 0.0,
+    }
+    if len(loops) <= 1:
+        bm.free()
+        return notes
+
+    loops = sorted(loops, key=_edge_loop_length, reverse=True)
+    notes["kept_outer_loop_length"] = _edge_loop_length(loops[0])
+    for loop_edges in loops[1:]:
+        try:
+            result = bmesh.ops.holes_fill(bm, edges=loop_edges, sides=0)
+            faces = result.get("faces", [])
+            if faces:
+                notes["filled_loops"] += 1
+                notes["filled_faces"] += len(faces)
+        except Exception:
+            continue
+    if bm.faces:
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update(calc_edges=True)
+    return notes
 
 
 def _repair_mesh_object(obj):
@@ -637,6 +712,9 @@ class SPLIT3R_OT_create_plug_socket(Operator):
 
         short_name = source.name[:40]
         plug = _mesh_from_faces(source, face_indices, f"Split3r_Plug_{short_name}")
+        patch_fill_note = None
+        if settings.fill_internal_patch_holes:
+            patch_fill_note = _fill_internal_patch_holes(plug)
         plug_mod = _add_solidify(plug, settings.plug_depth, "Split3r Plug Thickness")
 
         # Cutter is a separate solidified copy. Slightly thicker than plug for socket clearance.
@@ -678,10 +756,30 @@ class SPLIT3R_OT_create_plug_socket(Operator):
         source.select_set(True)
         context.view_layer.objects.active = plug
         note = "Plug/socket creado con Solidify + Boolean EXACT."
+        if patch_fill_note:
+            note += f" Patch holes: {patch_fill_note.get('filled_loops', 0)} loops / {patch_fill_note.get('filled_faces', 0)} caras."
         if repair_notes:
             filled = sum(item[1].get("filled_faces", 0) for item in repair_notes)
             note += f" Repair: {filled} caras de cierre agregadas."
         self.report({"INFO"}, note)
+        return {"FINISHED"}
+
+
+class SPLIT3R_OT_repair_active_mesh(Operator):
+    bl_idname = "split3r.repair_active_mesh"
+    bl_label = "Repair Active Mesh"
+    bl_description = "Fill boundary holes and recalculate normals on the active mesh object"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = _ensure_mesh_object(context)
+        if obj.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        notes = _repair_mesh_object(obj)
+        self.report(
+            {"INFO"},
+            f"Repair Active Mesh: {notes.get('boundary_edges_before', 0)} boundary edges, {notes.get('filled_faces', 0)} caras agregadas.",
+        )
         return {"FINISHED"}
 
 
@@ -743,8 +841,10 @@ class SPLIT3R_PT_panel(Panel):
         layout.prop(settings, "apply_boolean")
         layout.prop(settings, "keep_cutter")
         layout.prop(settings, "apply_output_modifiers")
+        layout.prop(settings, "fill_internal_patch_holes")
         layout.prop(settings, "repair_outputs")
         layout.operator("split3r.create_plug_socket", icon="MOD_BOOLEAN")
+        layout.operator("split3r.repair_active_mesh", icon="MOD_REMESH")
 
         layout.separator()
         layout.label(text="4) Export")
@@ -772,6 +872,7 @@ _CLASSES = (
     SPLIT3R_OT_grow_smart_selection,
     SPLIT3R_OT_shrink_smart_selection,
     SPLIT3R_OT_create_plug_socket,
+    SPLIT3R_OT_repair_active_mesh,
     SPLIT3R_OT_export_selected_stl,
     SPLIT3R_PT_panel,
 )
