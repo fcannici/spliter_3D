@@ -1,13 +1,14 @@
 # Split3r Clone
 
-Split3r Clone es una aplicación experimental en Python para cargar modelos 3D (`.stl`, `.obj`, `.3mf`), seleccionar caras sobre la malla y extraer una pieza tipo **plug & socket** pensada para flujos de impresión 3D.
+Split3r Clone es una aplicación experimental en Python para cargar modelos 3D (`.stl`, `.obj`, `.3mf`), seleccionar regiones sobre la malla y generar **interlocking inserts**: una pieza macho imprimible por separado y el slot/negativo correspondiente en el cuerpo original para flujos FDM multicolor o por partes.
 
 ## Funcionalidades
 
 - Carga de modelos STL/OBJ/3MF con PyVista, VTK y Trimesh.
 - Selección por `Smart Shell` basada en adyacencia y ángulo entre caras.
 - Selección manual con brocha esférica.
-- Extracción de una pieza sólida y cavidad socket.
+- Extracción de insert macho sólido con profundidad configurable.
+- Generación de slot/negativo en el cuerpo original con clearance FDM configurable, default `0.2mm`.
 - Modo de movimiento para arrastrar piezas extraídas.
 - Exportación del último plug y del body/socket.
 - Undo de la última extracción.
@@ -43,10 +44,21 @@ Luego usa **Archivo > Importar STL/OBJ/3MF...** para cargar un modelo.
 - Click derecho: pintar/seleccionar sobre la malla.
 - `Ctrl + click derecho`: borrar selección.
 - `Ctrl + rueda`: cambiar tamaño de brocha o tolerancia del Smart Shell.
-- `EXTRACT PLUG & SOCKET`: crear plug y socket desde la selección.
+- `EXTRACT INTERLOCKING INSERT`: crear el insert macho y restar el slot al cuerpo original.
 - `Undo Last Extraction`: revertir la última extracción.
 - `Archivo > Exportar último plug...`: guardar la pieza extraída.
 - `Archivo > Exportar body/socket...`: guardar la malla restante.
+
+## Workflow principal: interlocking insert
+
+1. Importá un modelo.
+2. Seleccioná una región superficial, por ejemplo un ojo/emblema/panel.
+3. Ajustá `Grosor de Pieza` para definir el `depth` del macho hacia adentro.
+4. Ajustá `Buffer socket` para la tolerancia FDM. El default es `0.2mm`.
+5. Ejecutá `EXTRACT INTERLOCKING INSERT`.
+6. Exportá el último insert y el body/socket desde el menú Archivo.
+
+La operación intenta hacer un boolean real del slot sobre el cuerpo original. Si un backend robusto como Blender está disponible en `PATH`, la app puede usarlo; si no, usa VTK/PyVista y deja warnings en `app_log.txt` si debe caer a fallback.
 
 ## Builds de escritorio
 
