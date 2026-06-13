@@ -89,7 +89,11 @@ def load_trimesh(filepath: str | Path) -> trimesh.Trimesh:
     mesh.remove_unreferenced_vertices()
     if mesh.faces.shape[1] != 3:
         raise ValueError("Solo se soportan mallas trianguladas.")
-    return remove_triangle_artifacts(mesh)
+    # Do not remove triangles during import. Bambu 3MF files can be watertight only with
+    # very thin triangles that look like artifacts numerically; removing them here makes the
+    # model appear broken before any extraction. Artifact cleanup is applied later to extracted
+    # pieces, where it is safer.
+    return mesh
 
 
 def trimesh_to_polydata(mesh: trimesh.Trimesh) -> pv.PolyData:
