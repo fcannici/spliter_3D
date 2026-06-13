@@ -20,4 +20,4 @@ Split3r Clone is now identified as a Python desktop app for 3D mesh face selecti
 
 ## Next
 
-No open queue tasks. Recommended next work: manual smoke test the Qt UI with real STL/3MF assets and refine extraction geometry if needed.
+Open project queued: integrate Threadwell into Blender as a Python add-on bridge. First practical step: design the Blender add-on architecture and prototype a minimal panel that can send prompts to Threadwell via CLI or RPC.

@@ -95,3 +95,44 @@ Scope:
 Status: done
 Scope:
 - Updated `STATE.md`, `CONTEXT.md`, and this queue after implementation.
+
+### T016 — Proyecto: integrar Threadwell a Blender como add-on
+
+Status: pending
+Scope:
+- Crear un add-on Python de Blender que actúe como puente hacia Threadwell.
+- Empezar con una versión mínima: panel en Blender, campo de prompt, botón para enviar a Threadwell y área para ver respuesta.
+- Usar inicialmente Threadwell CLI (`thread -p`) o evaluar `thread --mode rpc` para sesión persistente.
+
+### T017 — Diseñar arquitectura Threadwell-Blender
+
+Status: pending
+Scope:
+- Definir si la integración inicial usa CLI, RPC o servidor local.
+- Documentar arquitectura recomendada: Blender add-on Python + Threadwell RPC + futura extensión Threadwell con herramientas Blender.
+- Definir límites de seguridad para ejecutar código generado dentro de Blender.
+
+### T018 — Prototipo mínimo de add-on Blender para Threadwell
+
+Status: pending
+Scope:
+- Crear carpeta de add-on, por ejemplo `blender_threadwell_addon/`.
+- Implementar `__init__.py` instalable en Blender.
+- Agregar panel `N Panel > Threadwell`.
+- Permitir enviar prompts y mostrar respuesta.
+
+### T019 — Agregar herramientas Blender para Threadwell
+
+Status: pending
+Scope:
+- Diseñar tools futuras: `blender_get_scene`, `blender_get_selected_objects`, `blender_run_python`, `blender_create_material`, `blender_export_scene`.
+- Evaluar extensión TypeScript de Threadwell que registre estas tools y se comunique con Blender.
+
+### T020 — Validar flujo de seguridad y UX en Blender
+
+Status: pending
+Scope:
+- Agregar confirmación explícita antes de ejecutar scripts Python generados.
+- Mostrar preview del código antes de ejecutarlo.
+- Registrar logs de comandos y respuestas.
+- Probar instalación manual del add-on en Blender.
