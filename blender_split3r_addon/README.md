@@ -1,0 +1,36 @@
+# Split3r Blender Add-on Prototype
+
+Prototipo V2 de Split3r usando Blender como motor geométrico.
+
+## Por qué Blender
+
+El prototipo PyVista/VTK demostró que la selección funciona, pero la generación manual de tapas, paredes y socket crea geometría incorrecta en modelos orgánicos complejos. Blender aporta:
+
+- selección y edición de malla maduras;
+- `Solidify` para dar espesor a una selección abierta;
+- `Boolean EXACT` para crear el socket;
+- inspección visual del cutter antes de aplicar;
+- exportación STL desde el mismo entorno.
+
+## Instalación manual
+
+1. Abrir Blender.
+2. `Edit > Preferences > Add-ons > Install...`
+3. Seleccionar la carpeta comprimida del add-on o instalar este directorio como add-on de desarrollo.
+4. Activar **Split3r Blender Prototype**.
+5. En la vista 3D abrir el panel lateral con `N` y entrar a la pestaña **Split3r**.
+
+## Flujo inicial
+
+1. Importar el `.3mf`/`.stl` en Blender.
+2. Seleccionar el objeto.
+3. Entrar a `Edit Mode` y seleccionar una cara semilla.
+4. Usar **Smart Shell Select** con el ángulo deseado.
+5. Usar **Create Plug + Socket**.
+6. Por defecto el boolean no se aplica inmediatamente: se crea un modifier en el body y un cutter visible en modo wire para inspeccionar.
+7. Si el resultado se ve correcto, aplicar el modifier o activar `Apply boolean`.
+8. Exportar plug/body como STL.
+
+## Estado
+
+Este add-on es un prototipo inicial. La intención es reemplazar el core de extracción manual de la app PyVista por operaciones robustas de Blender.

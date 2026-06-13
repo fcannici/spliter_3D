@@ -96,30 +96,30 @@ Status: done
 Scope:
 - Updated `STATE.md`, `CONTEXT.md`, and this queue after implementation.
 
-### T016 — Proyecto: integrar Threadwell a Blender como add-on
+### T016 — Proyecto: migrar Split3r a Blender como add-on
 
-Status: pending
+Status: in-progress
 Scope:
-- Crear un add-on Python de Blender que actúe como puente hacia Threadwell.
-- Empezar con una versión mínima: panel en Blender, campo de prompt, botón para enviar a Threadwell y área para ver respuesta.
-- Usar inicialmente Threadwell CLI (`thread -p`) o evaluar `thread --mode rpc` para sesión persistente.
+- Crear un add-on Python de Blender que use Blender como motor robusto de selección, Solidify y Boolean EXACT.
+- Mantener el prototipo PyVista como referencia, pero dejar de parchar el core de extracción manual.
+- Primer prototipo creado en `blender_split3r_addon/`.
 
-### T017 — Diseñar arquitectura Threadwell-Blender
+### T017 — Diseñar arquitectura Split3r-Blender
 
-Status: pending
+Status: done
 Scope:
-- Definir si la integración inicial usa CLI, RPC o servidor local.
-- Documentar arquitectura recomendada: Blender add-on Python + Threadwell RPC + futura extensión Threadwell con herramientas Blender.
-- Definir límites de seguridad para ejecutar código generado dentro de Blender.
+- Arquitectura recomendada: add-on Python de Blender + operadores nativos de Blender (`bmesh`, `Solidify`, `Boolean EXACT`) + export STL.
+- El boolean queda opcionalmente sin aplicar para inspeccionar cutter/modifier antes de destruir geometría.
+- Futura integración Threadwell puede añadirse como panel separado o herramientas de automatización.
 
-### T018 — Prototipo mínimo de add-on Blender para Threadwell
+### T018 — Prototipo mínimo de add-on Blender para Split3r
 
-Status: pending
+Status: done
 Scope:
-- Crear carpeta de add-on, por ejemplo `blender_threadwell_addon/`.
-- Implementar `__init__.py` instalable en Blender.
-- Agregar panel `N Panel > Threadwell`.
-- Permitir enviar prompts y mostrar respuesta.
+- Creada carpeta `blender_split3r_addon/`.
+- Implementado `__init__.py` instalable en Blender.
+- Agregado panel `N Panel > Split3r`.
+- Incluye Smart Shell Select, Create Plug + Socket, y export STL de objetos seleccionados.
 
 ### T019 — Agregar herramientas Blender para Threadwell
 

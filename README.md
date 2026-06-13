@@ -116,6 +116,22 @@ pytest
 
 Los modelos grandes (`*.stl`, `*.3mf`) están ignorados por defecto en `.gitignore`. Para ejemplos pequeños, usar `assets/`; para modelos pesados, preferir Git LFS o almacenamiento externo.
 
+## Blender add-on prototype
+
+Después de probar el core PyVista/VTK con modelos orgánicos complejos, se inició una V2 recomendada como add-on de Blender en:
+
+```txt
+blender_split3r_addon/
+```
+
+Incluye un panel `N Panel > Split3r` con:
+
+- Smart Shell Select usando `bmesh`.
+- Create Plug + Socket usando `Solidify` y `Boolean EXACT`.
+- Exportación STL de objetos seleccionados.
+
+Ver `blender_split3r_addon/README.md` para instalación y flujo de prueba.
+
 ## Estado
 
-Proyecto en refactor inicial. La lógica nueva se está separando en módulos dentro de `app/`, mientras `main.py` mantiene la interfaz Qt principal.
+La app PyVista queda como prototipo/reference. El camino recomendado para continuar es el add-on de Blender, porque evita generar manualmente tapas y paredes sobre mallas orgánicas complejas.
