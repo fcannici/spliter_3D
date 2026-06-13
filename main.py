@@ -159,6 +159,7 @@ class Split3rClone(QMainWindow):
         self.brush_radius = 5.0
         self.smart_angle = 30.0
         self.extrude_depth = 2.0
+        self.socket_clearance = 0.2
         self.last_hover_face = -1
 
         self.main_actor_vtk = None
@@ -247,6 +248,14 @@ class Split3rClone(QMainWindow):
         self.slider_depth.setValue(20)
         self.slider_depth.valueChanged.connect(self.update_depth)
         layout_3d.addWidget(self.slider_depth)
+        self.lbl_clearance = QLabel("Buffer socket: 0.2mm")
+        layout_3d.addWidget(self.lbl_clearance)
+        self.slider_clearance = QSlider(Qt.Orientation.Horizontal)
+        self.slider_clearance.setMinimum(0)
+        self.slider_clearance.setMaximum(20)
+        self.slider_clearance.setValue(2)
+        self.slider_clearance.valueChanged.connect(self.update_clearance)
+        layout_3d.addWidget(self.slider_clearance)
         self.panel_layout.addWidget(group_3d)
 
         self.brush_group = QButtonGroup()
@@ -305,6 +314,10 @@ class Split3rClone(QMainWindow):
     def update_depth(self, val):
         self.extrude_depth = float(val) / 10.0
         self.lbl_depth.setText(f"Grosor de Pieza: {self.extrude_depth:.1f}mm")
+
+    def update_clearance(self, val):
+        self.socket_clearance = float(val) / 10.0
+        self.lbl_clearance.setText(f"Buffer socket: {self.socket_clearance:.1f}mm")
 
     def refresh_hover(self):
         if hasattr(self.plotter, "last_vtk_pos"):
@@ -465,10 +478,15 @@ class Split3rClone(QMainWindow):
 
     def extract_part(self):
         try:
-            self.set_status(f"Building SOLID Plug & Socket ({self.extrude_depth}mm)...")
+            self.set_status(f"Building SOLID Plug & Socket ({self.extrude_depth}mm, buffer {self.socket_clearance}mm)...")
             QApplication.processEvents()
             self.undo_stack.append((self.current_mesh.copy(), list(self.extracted_parts)))
-            plug_mesh, body_mesh = extract_plug_socket(self.current_mesh, self.selected_cells, self.extrude_depth)
+            plug_mesh, body_mesh = extract_plug_socket(
+                self.current_mesh,
+                self.selected_cells,
+                self.extrude_depth,
+                socket_clearance=self.socket_clearance,
+            )
             self.extracted_parts.append(plug_mesh)
             self.plotter.add_mesh(plug_mesh, color="cyan", pbr=True, name=f"Part_{len(self.extracted_parts)}")
             self.current_mesh = body_mesh

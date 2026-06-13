@@ -47,13 +47,44 @@ def _build_walls(part_surface: pv.PolyData, top_surface: pv.PolyData, bottom_sur
     return pv.PolyData(np.asarray(wall_pts), np.asarray(wall_faces)).triangulate()
 
 
-def extract_plug_socket(current_mesh: pv.PolyData, selected_cells: set[int], extrude_depth: float) -> tuple[pv.PolyData, pv.PolyData]:
-    """Return (plug_mesh, body_with_socket_mesh) for the selected cell region."""
+def _solid_from_offsets(part_surface: pv.PolyData, outward_offset: float, inward_offset: float) -> pv.PolyData:
+    """Create a closed solid from a selected surface using point-normal offsets."""
+    top_surface = part_surface.copy()
+    bottom_surface = part_surface.copy()
+    normals = part_surface.point_data["Normals"]
+    top_surface.points += normals * float(outward_offset)
+    bottom_surface.points -= normals * float(inward_offset)
+    walls_mesh = _build_walls(part_surface, top_surface, bottom_surface)
+    return top_surface.append_polydata(bottom_surface).append_polydata(walls_mesh).clean().triangulate()
+
+
+def _fallback_socket_body(current_mesh: pv.PolyData, valid_selection: set[int], socket_cutter: pv.PolyData) -> pv.PolyData:
+    """Fallback socket construction when a VTK boolean cannot be computed."""
+    remaining_ids = sorted(set(range(current_mesh.n_cells)) - valid_selection)
+    remaining_surface = current_mesh.extract_cells(remaining_ids).extract_surface(algorithm="dataset_surface").triangulate()
+    socket_surface = socket_cutter.extract_surface(algorithm="dataset_surface").triangulate()
+    return remaining_surface.append_polydata(socket_surface).clean().triangulate()
+
+
+def extract_plug_socket(
+    current_mesh: pv.PolyData,
+    selected_cells: set[int],
+    extrude_depth: float,
+    socket_clearance: float = 0.2,
+) -> tuple[pv.PolyData, pv.PolyData]:
+    """Return (plug_mesh, body_with_socket_mesh) for the selected cell region.
+
+    The plug keeps the requested extrusion depth. The body/socket is produced by
+    subtracting a slightly larger cutter from the original mesh, giving the
+    negative cavity a configurable FDM clearance/buffer.
+    """
     validate_polydata(current_mesh)
     if not selected_cells:
         raise ValueError("No hay caras seleccionadas para extraer.")
     if extrude_depth <= 0:
         raise ValueError("El grosor de extrusión debe ser mayor a cero.")
+    if socket_clearance < 0:
+        raise ValueError("El buffer del socket no puede ser negativo.")
 
     valid_selection = {int(c) for c in selected_cells if 0 <= int(c) < current_mesh.n_cells}
     if not valid_selection:
@@ -61,7 +92,7 @@ def extract_plug_socket(current_mesh: pv.PolyData, selected_cells: set[int], ext
     if len(valid_selection) >= current_mesh.n_cells:
         raise ValueError("No se puede extraer el 100% de la malla como socket.")
 
-    part_surface = current_mesh.extract_cells(sorted(valid_selection)).extract_surface().triangulate()
+    part_surface = current_mesh.extract_cells(sorted(valid_selection)).extract_surface(algorithm="dataset_surface").triangulate()
     if part_surface.n_cells == 0:
         raise ValueError("La superficie seleccionada está vacía.")
 
@@ -69,16 +100,20 @@ def extract_plug_socket(current_mesh: pv.PolyData, selected_cells: set[int], ext
     if "Normals" not in part_surface.point_data:
         raise ValueError("No se pudieron calcular normales para la selección.")
 
-    top_surface = part_surface.copy()
-    bottom_surface = part_surface.copy()
-    bottom_surface.points -= bottom_surface.point_data["Normals"] * float(extrude_depth)
+    plug_mesh = _solid_from_offsets(part_surface, outward_offset=0.0, inward_offset=extrude_depth)
 
-    walls_mesh = _build_walls(part_surface, top_surface, bottom_surface)
-    plug_mesh = top_surface.append_polydata(bottom_surface).append_polydata(walls_mesh).clean().triangulate()
+    # The cutter extends slightly outward to avoid coplanar boolean surfaces and
+    # inward by depth + clearance, creating the requested negative buffer.
+    socket_cutter = _solid_from_offsets(
+        part_surface,
+        outward_offset=socket_clearance,
+        inward_offset=float(extrude_depth) + float(socket_clearance),
+    )
 
-    remaining_ids = sorted(set(range(current_mesh.n_cells)) - valid_selection)
-    remaining_surface = current_mesh.extract_cells(remaining_ids).extract_surface().triangulate()
-    body_mesh = remaining_surface.append_polydata(walls_mesh.copy()).append_polydata(bottom_surface.copy()).clean().triangulate()
+    try:
+        body_mesh = current_mesh.triangulate().boolean_difference(socket_cutter, progress_bar=False).clean().triangulate()
+    except Exception:
+        body_mesh = _fallback_socket_body(current_mesh, valid_selection, socket_cutter)
 
     validate_polydata(plug_mesh)
     validate_polydata(body_mesh)
