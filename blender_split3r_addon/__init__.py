@@ -90,7 +90,7 @@ class Split3rSettings(PropertyGroup):
     grow_boundary_angle: FloatProperty(
         name="Grow boundary",
         description="Maximum local angle Ctrl+Wheel can cross when Angle-limited grow is disabled. Higher wraps more; lower prevents spillover",
-        default=22.0,
+        default=25.0,
         min=5.0,
         max=90.0,
     )
@@ -544,8 +544,8 @@ class SPLIT3R_OT_reset_selection_settings(Operator):
         settings.smart_step_angle = 10.0
         settings.grow_steps = 1
         settings.grow_use_angle_limits = False
-        settings.grow_boundary_angle = 22.0
-        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 22, Angle-limited OFF.")
+        settings.grow_boundary_angle = 25.0
+        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 25, Angle-limited OFF.")
         return {"FINISHED"}
 
 
@@ -582,13 +582,19 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
 
         added_total = 0
         for _ in range(settings.grow_steps):
-            candidates = {}
-            min_support = 2 if len(selected) >= 24 and not settings.grow_use_angle_limits else 1
+            to_add = set()
+            # Performance: only boundary faces can grow. Iterating every selected face on
+            # dense 3MF meshes becomes slow and feels like Ctrl+Wheel is stuck.
+            boundary_faces = []
             for face in selected:
+                for edge in face.edges:
+                    if len(edge.link_faces) == 2 and any(neighbor not in selected for neighbor in edge.link_faces):
+                        boundary_faces.append(face)
+                        break
+            for face in boundary_faces:
                 for edge in face.edges:
                     # Ctrl+Wheel should wrap along the same connected surface, but it must
                     # not leak through boundary/non-manifold edges or across sharp folds.
-                    # A support count prevents thin spill tendrils through a small boundary.
                     if len(edge.link_faces) != 2:
                         continue
                     for neighbor in edge.link_faces:
@@ -602,8 +608,7 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                                 continue
                         elif local_angle > max_boundary_angle:
                             continue
-                        candidates[neighbor] = candidates.get(neighbor, 0) + 1
-            to_add = {face for face, support in candidates.items() if support >= min_support}
+                        to_add.add(neighbor)
             if not to_add:
                 break
             for face in to_add:
