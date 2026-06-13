@@ -498,7 +498,11 @@ class SPLIT3R_OT_smart_shell_select(Operator):
         # Smart Shell is a replacement selection from the active seed face.
         # If an old overgrown selection remains selected, leaving it active makes it look
         # like the settings/script did not change because the old faces stay selected.
+        grow_lock_layer = bm.faces.layers.int.get("split3r_grow_locked")
+        if grow_lock_layer is None:
+            grow_lock_layer = bm.faces.layers.int.new("split3r_grow_locked")
         for face in bm.faces:
+            face[grow_lock_layer] = 0
             if face is not active:
                 face.select_set(False)
         active.select_set(True)
@@ -567,6 +571,9 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
         if not selected:
             self.report({"ERROR"}, "Seleccioná al menos una cara antes de ampliar.")
             return {"CANCELLED"}
+        grow_lock_layer = bm.faces.layers.int.get("split3r_grow_locked")
+        if grow_lock_layer is None:
+            grow_lock_layer = bm.faces.layers.int.new("split3r_grow_locked")
 
         max_step_angle = math.radians(settings.smart_step_angle)
         max_seed_angle = math.radians(settings.smart_angle)
@@ -592,6 +599,8 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                         boundary_faces.append(face)
                         break
             for face in boundary_faces:
+                if face[grow_lock_layer]:
+                    continue
                 face_reached_boundary = False
                 if not settings.grow_use_angle_limits:
                     for edge in face.edges:
@@ -607,9 +616,9 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                         if face_reached_boundary:
                             break
                 if face_reached_boundary:
-                    # This boundary face already hit the limit. Do not let the same side
-                    # keep advancing around the limit as a spill/tendril; allow other open
-                    # sides of the selection to catch up on later Ctrl+Wheel steps.
+                    # Persist the reached limit between Ctrl+Wheel events. Without this,
+                    # the next wheel tick can continue growing around the same boundary.
+                    face[grow_lock_layer] = 1
                     continue
                 for edge in face.edges:
                     # Ctrl+Wheel should wrap along the same connected surface, but it must
@@ -619,6 +628,8 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                     for neighbor in edge.link_faces:
                         if neighbor is face or neighbor in selected:
                             continue
+                        if any(link is not neighbor and link in selected and link[grow_lock_layer] for link in neighbor.link_faces):
+                            continue
                         local_angle = face.normal.angle(neighbor.normal, 0.0)
                         if settings.grow_use_angle_limits:
                             if local_angle > max_step_angle:
@@ -626,6 +637,7 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                             if neighbor.normal.angle(avg, 0.0) > max_seed_angle:
                                 continue
                         elif local_angle > max_boundary_angle:
+                            face[grow_lock_layer] = 1
                             continue
                         to_add.add(neighbor)
             if not to_add:
