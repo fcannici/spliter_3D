@@ -592,6 +592,25 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                         boundary_faces.append(face)
                         break
             for face in boundary_faces:
+                face_reached_boundary = False
+                if not settings.grow_use_angle_limits:
+                    for edge in face.edges:
+                        if len(edge.link_faces) != 2:
+                            face_reached_boundary = True
+                            break
+                        for neighbor in edge.link_faces:
+                            if neighbor is face or neighbor in selected:
+                                continue
+                            if face.normal.angle(neighbor.normal, 0.0) > max_boundary_angle:
+                                face_reached_boundary = True
+                                break
+                        if face_reached_boundary:
+                            break
+                if face_reached_boundary:
+                    # This boundary face already hit the limit. Do not let the same side
+                    # keep advancing around the limit as a spill/tendril; allow other open
+                    # sides of the selection to catch up on later Ctrl+Wheel steps.
+                    continue
                 for edge in face.edges:
                     # Ctrl+Wheel should wrap along the same connected surface, but it must
                     # not leak through boundary/non-manifold edges or across sharp folds.
