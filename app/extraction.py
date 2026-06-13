@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import defaultdict, deque
 
 import numpy as np
 import pyvista as pv
+from scipy.spatial import Delaunay
 
 from .mesh_io import validate_polydata
 
@@ -53,7 +54,7 @@ def _boundary_loops(part_surface: pv.PolyData) -> list[list[int]]:
         raise ValueError("PyVista no devolvió vtkOriginalPointIds para el borde de la selección.")
 
     orig_ids = np.asarray(boundary.point_data["vtkOriginalPointIds"], dtype=int)
-    adjacency: dict[int, list[int]] = defaultdict(list)
+    adjacency: dict[int, set[int]] = defaultdict(set)
 
     for i in range(boundary.n_cells):
         cell = boundary.get_cell(i)
@@ -63,55 +64,129 @@ def _boundary_loops(part_surface: pv.PolyData) -> list[list[int]]:
         b = int(orig_ids[int(cell.point_ids[1])])
         if a == b:
             continue
-        adjacency[a].append(b)
-        adjacency[b].append(a)
+        adjacency[a].add(b)
+        adjacency[b].add(a)
 
+    # Only closed, non-branching boundary components are safe to cap. Open or branched
+    # components are the source of the long fins/hairs visible after extraction.
     loops: list[list[int]] = []
-    visited_edges: set[tuple[int, int]] = set()
+    seen_nodes: set[int] = set()
+    for start in list(adjacency):
+        if start in seen_nodes:
+            continue
 
-    for start, neighbors in adjacency.items():
-        for first_next in neighbors:
-            edge_key = tuple(sorted((start, first_next)))
-            if edge_key in visited_edges:
-                continue
+        component: set[int] = set()
+        queue: deque[int] = deque([start])
+        seen_nodes.add(start)
+        while queue:
+            node = queue.popleft()
+            component.add(node)
+            for neighbor in adjacency[node]:
+                if neighbor not in seen_nodes:
+                    seen_nodes.add(neighbor)
+                    queue.append(neighbor)
 
-            loop = [start]
-            prev = start
-            current = first_next
-            visited_edges.add(edge_key)
+        if len(component) < 4:
+            continue
+        if any(len(adjacency[node]) != 2 for node in component):
+            # Discard malformed/open/branched loops instead of creating visual artifacts.
+            continue
 
-            while True:
-                loop.append(current)
-                candidates = [n for n in adjacency[current] if n != prev]
-                if not candidates:
-                    break
+        ordered = [start]
+        prev = None
+        current = start
+        while True:
+            neighbors = list(adjacency[current])
+            next_node = neighbors[0] if neighbors[0] != prev else neighbors[1]
+            if next_node == start:
+                break
+            if next_node in ordered:
+                ordered = []
+                break
+            ordered.append(next_node)
+            prev, current = current, next_node
 
-                # Prefer an unvisited edge; this handles occasional branchy boundaries better.
-                next_point = None
-                for candidate in candidates:
-                    candidate_key = tuple(sorted((current, candidate)))
-                    if candidate_key not in visited_edges:
-                        next_point = candidate
-                        break
-                if next_point is None:
-                    break
-
-                if next_point == start:
-                    visited_edges.add(tuple(sorted((current, next_point))))
-                    break
-
-                prev, current = current, next_point
-                visited_edges.add(tuple(sorted((prev, current))))
-
-            if len(loop) >= 3:
-                # Remove duplicate closing vertex if present.
-                if loop[0] == loop[-1]:
-                    loop = loop[:-1]
-                loops.append(loop)
+        if len(ordered) >= 4:
+            loops.append(ordered)
 
     if not loops:
-        raise ValueError("No se pudo ordenar el borde de la selección.")
+        raise ValueError("No se pudo encontrar un borde cerrado limpio. Ajustá la selección para evitar bordes abiertos o ramificados.")
     return loops
+
+
+def _basis_from_normal(normal: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    helper = np.array([1.0, 0.0, 0.0]) if abs(float(normal[0])) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = _normalize(np.cross(normal, helper))
+    v = _normalize(np.cross(normal, u))
+    return u, v
+
+
+def _polygon_area(points_2d: np.ndarray) -> float:
+    x = points_2d[:, 0]
+    y = points_2d[:, 1]
+    return float(0.5 * abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+
+
+def _points_in_polygon(points: np.ndarray, polygon: np.ndarray) -> np.ndarray:
+    x = points[:, 0]
+    y = points[:, 1]
+    poly_x = polygon[:, 0]
+    poly_y = polygon[:, 1]
+    inside = np.zeros(len(points), dtype=bool)
+    j = len(polygon) - 1
+    for i in range(len(polygon)):
+        intersects = ((poly_y[i] > y) != (poly_y[j] > y)) & (
+            x < (poly_x[j] - poly_x[i]) * (y - poly_y[i]) / (poly_y[j] - poly_y[i] + 1e-12) + poly_x[i]
+        )
+        inside ^= intersects
+        j = i
+    return inside
+
+
+def _triangulate_cap(bottom_points: np.ndarray, normal: np.ndarray) -> pv.PolyData:
+    if len(bottom_points) < 3:
+        return _empty_polydata()
+
+    center = bottom_points.mean(axis=0)
+    u, v = _basis_from_normal(normal)
+    rel = bottom_points - center
+    points_2d = np.column_stack((rel @ u, rel @ v))
+
+    # Drop near-duplicate boundary vertices before triangulation.
+    _, unique_indices = np.unique(np.round(points_2d, decimals=6), axis=0, return_index=True)
+    unique_indices = np.sort(unique_indices)
+    bottom_points = bottom_points[unique_indices]
+    points_2d = points_2d[unique_indices]
+    if len(bottom_points) < 3 or _polygon_area(points_2d) <= 1e-8:
+        return _empty_polydata()
+
+    try:
+        simplices = Delaunay(points_2d).simplices
+    except Exception:
+        # Safe fallback: no cap is better than a huge crossing fin.
+        return _empty_polydata()
+
+    centroids = points_2d[simplices].mean(axis=1)
+    inside = _points_in_polygon(centroids, points_2d)
+
+    edge_lengths = np.linalg.norm(np.diff(np.vstack([points_2d, points_2d[0]]), axis=0), axis=1)
+    max_reasonable_edge = max(float(np.percentile(edge_lengths, 90) * 3.0), float(edge_lengths.mean() * 4.0), 1e-6)
+
+    faces: list[int] = []
+    for tri in simplices[inside]:
+        tri_pts = points_2d[tri]
+        tri_edges = [
+            np.linalg.norm(tri_pts[0] - tri_pts[1]),
+            np.linalg.norm(tri_pts[1] - tri_pts[2]),
+            np.linalg.norm(tri_pts[2] - tri_pts[0]),
+        ]
+        if max(tri_edges) > max_reasonable_edge:
+            continue
+        faces.extend([3, int(tri[0]), int(tri[1]), int(tri[2])])
+
+    if not faces:
+        return _empty_polydata()
+    return pv.PolyData(bottom_points, np.asarray(faces)).clean().triangulate()
 
 
 def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) -> tuple[pv.PolyData, pv.PolyData]:
@@ -124,13 +199,30 @@ def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) ->
     normal = _average_surface_normal(part_surface)
     loops = _boundary_loops(part_surface)
 
-    wall_pts: list[np.ndarray] = []
-    wall_faces: list[int] = []
-    cap_pts: list[np.ndarray] = []
-    cap_faces: list[int] = []
-
+    loop_data = []
+    u, v = _basis_from_normal(normal)
     for loop in loops:
         top_points = np.asarray([part_surface.points[pid] for pid in loop], dtype=float)
+        center = top_points.mean(axis=0)
+        points_2d = np.column_stack(((top_points - center) @ u, (top_points - center) @ v))
+        area = _polygon_area(points_2d)
+        if area > 1e-8:
+            loop_data.append((area, top_points))
+
+    if not loop_data:
+        raise ValueError("El borde de la selección no tiene área suficiente para generar una tapa limpia.")
+
+    # Keep the real cut loops and discard tiny noisy loops from scan artifacts/teeth.
+    max_area = max(area for area, _ in loop_data)
+    loop_data = [(area, pts) for area, pts in loop_data if area >= max_area * 0.08 and len(pts) >= 8]
+    if not loop_data:
+        raise ValueError("Solo se encontraron loops de borde pequeños o ruidosos.")
+
+    wall_pts: list[np.ndarray] = []
+    wall_faces: list[int] = []
+    cap_meshes: list[pv.PolyData] = []
+
+    for _area, top_points in loop_data:
         center = top_points.mean(axis=0)
 
         # Project the boundary to a single plane, then push it inward. This gives a much cleaner
@@ -141,7 +233,7 @@ def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) ->
         wall_base = len(wall_pts)
         wall_pts.extend(top_points)
         wall_pts.extend(bottom_points)
-        n = len(loop)
+        n = len(top_points)
 
         for i in range(n):
             j = (i + 1) % n
@@ -152,17 +244,15 @@ def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) ->
             wall_faces.extend([3, top_i, top_j, bot_i])
             wall_faces.extend([3, top_j, bot_j, bot_i])
 
-        cap_base = len(cap_pts)
-        cap_pts.extend(bottom_points)
-        cap_center_idx = len(cap_pts)
-        cap_pts.append(bottom_points.mean(axis=0))
-        for i in range(n):
-            j = (i + 1) % n
-            # Fan cap. Orientation is less important than avoiding the previous crumpled cap.
-            cap_faces.extend([3, cap_center_idx, cap_base + j, cap_base + i])
+        cap = _triangulate_cap(bottom_points, normal)
+        if cap.n_cells > 0:
+            cap_meshes.append(cap)
 
     walls_mesh = pv.PolyData(np.asarray(wall_pts), np.asarray(wall_faces)).clean().triangulate() if wall_pts else _empty_polydata()
-    cap_mesh = pv.PolyData(np.asarray(cap_pts), np.asarray(cap_faces)).clean().triangulate() if cap_pts else _empty_polydata()
+    cap_mesh = cap_meshes[0]
+    for extra_cap in cap_meshes[1:]:
+        cap_mesh = cap_mesh.append_polydata(extra_cap)
+    cap_mesh = cap_mesh.clean().triangulate() if cap_meshes else _empty_polydata()
     return walls_mesh, cap_mesh
 
 
