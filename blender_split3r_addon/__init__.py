@@ -494,6 +494,7 @@ class SPLIT3R_OT_smart_shell_select(Operator):
                 self.report({"ERROR"}, "Seleccioná una cara semilla en Edit Mode.")
                 return {"CANCELLED"}
             active = selected[-1]
+        active_index = active.index
 
         # Smart Shell is a replacement selection from the active seed face.
         # If an old overgrown selection remains selected, leaving it active makes it look
@@ -501,6 +502,9 @@ class SPLIT3R_OT_smart_shell_select(Operator):
         grow_lock_layer = bm.faces.layers.int.get("split3r_grow_locked")
         if grow_lock_layer is None:
             grow_lock_layer = bm.faces.layers.int.new("split3r_grow_locked")
+            # Adding a custom data layer can invalidate existing BMFace references.
+            bm.faces.ensure_lookup_table()
+            active = bm.faces[active_index]
         for face in bm.faces:
             face[grow_lock_layer] = 0
             if face is not active:
@@ -567,13 +571,15 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
         bpy.ops.mesh.select_mode(type="FACE")
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
+        grow_lock_layer = bm.faces.layers.int.get("split3r_grow_locked")
+        if grow_lock_layer is None:
+            grow_lock_layer = bm.faces.layers.int.new("split3r_grow_locked")
+            # Adding a custom data layer can invalidate existing BMFace references.
+            bm.faces.ensure_lookup_table()
         selected = {face for face in bm.faces if face.select}
         if not selected:
             self.report({"ERROR"}, "Seleccioná al menos una cara antes de ampliar.")
             return {"CANCELLED"}
-        grow_lock_layer = bm.faces.layers.int.get("split3r_grow_locked")
-        if grow_lock_layer is None:
-            grow_lock_layer = bm.faces.layers.int.new("split3r_grow_locked")
 
         max_step_angle = math.radians(settings.smart_step_angle)
         max_seed_angle = math.radians(settings.smart_angle)
