@@ -4,8 +4,16 @@ import sys
 import time
 from pathlib import Path
 
-os.environ["QT_API"] = "pyqt6"
-os.environ["QT_OPENGL"] = "desktop"
+os.environ.setdefault("QT_API", "pyqt6")
+
+# VTK/PyVista currently uses vtkXOpenGLRenderWindow, which is more reliable
+# through XCB/XWayland than native Wayland. Some Linux desktops export
+# QT_QPA_PLATFORM=wayland;xcb, so force xcb by default before Qt is imported.
+# For troubleshooting, override with SPLIT3R_QT_QPA_PLATFORM=wayland/xcb/offscreen.
+if sys.platform.startswith("linux"):
+    os.environ["QT_QPA_PLATFORM"] = os.environ.get("SPLIT3R_QT_QPA_PLATFORM", "xcb")
+else:
+    os.environ.setdefault("QT_OPENGL", "desktop")
 
 import numpy as np
 import pyvista as pv
