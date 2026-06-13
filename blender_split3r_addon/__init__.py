@@ -634,7 +634,11 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                     for neighbor in edge.link_faces:
                         if neighbor is face or neighbor in selected:
                             continue
-                        if any(link is not neighbor and link in selected and link[grow_lock_layer] for link in neighbor.link_faces):
+                        if any(
+                            adjacent is not neighbor and adjacent in selected and adjacent[grow_lock_layer]
+                            for neighbor_edge in neighbor.edges
+                            for adjacent in neighbor_edge.link_faces
+                        ):
                             continue
                         local_angle = face.normal.angle(neighbor.normal, 0.0)
                         if settings.grow_use_angle_limits:
