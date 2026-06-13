@@ -9,6 +9,8 @@ from scipy.spatial import Delaunay
 from .mesh_io import validate_polydata
 
 _ORIGINAL_CELL_ID = "_split3r_original_cell_id"
+_SELECTION_OPENING_STEPS = 3
+_MIN_OPENED_SELECTION_RATIO = 0.12
 
 
 def _empty_polydata() -> pv.PolyData:
@@ -38,6 +40,100 @@ def _average_surface_normal(surface: pv.PolyData) -> np.ndarray:
         surface = surface.compute_normals(auto_orient_normals=True, point_normals=True, cell_normals=True)
         normals = surface.point_data.get("Normals")
     return _normalize(np.asarray(normals, dtype=float).mean(axis=0))
+
+
+def _cell_edge_adjacency(mesh: pv.PolyData) -> list[set[int]]:
+    """Return cell neighbors that share a full polygon edge.
+
+    Point-only adjacency is too permissive for scanned meshes: teeth/noise can touch the
+    selected patch at one vertex and then survive as long black/cyan hairs. Edge adjacency
+    lets us run a small morphological opening that removes those thin appendages while
+    preserving the main selected island.
+    """
+    adjacency = [set() for _ in range(mesh.n_cells)]
+    edge_to_cells: dict[tuple[int, int], list[int]] = defaultdict(list)
+
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    cursor = 0
+    for cell_id in range(mesh.n_cells):
+        n_points = int(faces[cursor])
+        point_ids = faces[cursor + 1 : cursor + 1 + n_points]
+        cursor += n_points + 1
+        if n_points < 2:
+            continue
+        for i in range(n_points):
+            a = int(point_ids[i])
+            b = int(point_ids[(i + 1) % n_points])
+            if a == b:
+                continue
+            edge_to_cells[tuple(sorted((a, b)))].append(cell_id)
+
+    for cells in edge_to_cells.values():
+        if len(cells) < 2:
+            continue
+        for i, cell_a in enumerate(cells):
+            for cell_b in cells[i + 1 :]:
+                adjacency[cell_a].add(cell_b)
+                adjacency[cell_b].add(cell_a)
+    return adjacency
+
+
+def _largest_cell_component(cells: set[int], adjacency: list[set[int]]) -> set[int]:
+    if not cells:
+        return set()
+
+    remaining = set(cells)
+    largest: set[int] = set()
+    while remaining:
+        start = remaining.pop()
+        component = {start}
+        queue: deque[int] = deque([start])
+        while queue:
+            cell = queue.popleft()
+            for neighbor in adjacency[cell]:
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    component.add(neighbor)
+                    queue.append(neighbor)
+        if len(component) > len(largest):
+            largest = component
+    return largest
+
+
+def _open_selection(cells: set[int], adjacency: list[set[int]], steps: int = _SELECTION_OPENING_STEPS) -> set[int]:
+    """Remove narrow selected tendrils before building plug/socket geometry.
+
+    The visual artifacts in the screenshots are caused less by the floor triangulation now and
+    more by brush selections that include very thin connected strips. A morphology-style opening
+    erodes the selection by a few edge-neighbor layers, keeps the largest stable core, and dilates
+    it back inside the original selection. Thin hairs disappear because they have no surviving core.
+    """
+    original = set(cells)
+    if len(original) < 20:
+        return original
+
+    opened = set(original)
+    for _ in range(steps):
+        eroded = {
+            cell
+            for cell in opened
+            if sum((neighbor in opened) for neighbor in adjacency[cell]) >= 2
+        }
+        if len(eroded) < max(8, int(len(original) * _MIN_OPENED_SELECTION_RATIO)):
+            return original
+        opened = eroded
+
+    opened = _largest_cell_component(opened, adjacency)
+    if len(opened) < max(8, int(len(original) * _MIN_OPENED_SELECTION_RATIO)):
+        return original
+
+    for _ in range(steps):
+        expanded = set(opened)
+        for cell in opened:
+            expanded.update(neighbor for neighbor in adjacency[cell] if neighbor in original)
+        opened = expanded
+
+    return opened if len(opened) >= max(8, int(len(original) * _MIN_OPENED_SELECTION_RATIO)) else original
 
 
 def _boundary_loops(part_surface: pv.PolyData) -> list[list[int]]:
@@ -269,6 +365,14 @@ def extract_plug_socket(current_mesh: pv.PolyData, selected_cells: set[int], ext
         raise ValueError("La selección no contiene caras válidas.")
     if len(valid_selection) >= current_mesh.n_cells:
         raise ValueError("No se puede extraer el 100% de la malla como socket.")
+
+    # Remove narrow brush tendrils before extracting. This prevents vertical hairs/fins in both
+    # the grey socket and the cyan plug while keeping the dominant selected patch.
+    adjacency = _cell_edge_adjacency(current_mesh)
+    valid_selection = _largest_cell_component(valid_selection, adjacency)
+    opened_selection = _open_selection(valid_selection, adjacency)
+    if opened_selection:
+        valid_selection = opened_selection
 
     # Preserve original cell IDs so cleaning disconnected islands also updates the removed cells.
     current_mesh.cell_data[_ORIGINAL_CELL_ID] = np.arange(current_mesh.n_cells)
