@@ -77,10 +77,15 @@ class Split3rSettings(PropertyGroup):
     )
     grow_steps: IntProperty(
         name="Grow steps",
-        description="How many rings to add with Grow Smart Selection",
+        description="How many edge rings to add/remove with Grow/Shrink",
         default=1,
         min=1,
         max=50,
+    )
+    grow_use_angle_limits: BoolProperty(
+        name="Angle-limited grow",
+        description="When enabled, Grow uses Smart/Step angle limits. When disabled, Ctrl+Wheel expands freely over the connected surface",
+        default=False,
     )
     save_imported_stl: BoolProperty(
         name="Save STL copy",
@@ -515,8 +520,8 @@ class SPLIT3R_OT_smart_shell_select(Operator):
 
 class SPLIT3R_OT_grow_smart_selection(Operator):
     bl_idname = "split3r.grow_smart_selection"
-    bl_label = "Grow Smart Selection"
-    bl_description = "Expand the current face selection by controlled angle-limited rings"
+    bl_label = "Grow Surface Selection"
+    bl_description = "Expand the current face selection by edge rings over the connected surface"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -535,27 +540,30 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
         max_step_angle = math.radians(settings.smart_step_angle)
         max_seed_angle = math.radians(settings.smart_angle)
         avg = Vector((0.0, 0.0, 0.0))
-        for face in selected:
-            avg += face.normal
-        if avg.length > 0:
-            avg.normalize()
-        else:
-            avg = next(iter(selected)).normal.copy()
+        if settings.grow_use_angle_limits:
+            for face in selected:
+                avg += face.normal
+            if avg.length > 0:
+                avg.normalize()
+            else:
+                avg = next(iter(selected)).normal.copy()
 
         added_total = 0
         for _ in range(settings.grow_steps):
             to_add = set()
             for face in selected:
                 for edge in face.edges:
-                    if len(edge.link_faces) != 2:
-                        continue
+                    # Ctrl+Wheel must behave like Blender's region grow: follow every face
+                    # connected by an edge so the selection can wrap up/down/sideways.
+                    # Angle limits are optional because they intentionally stop at curves.
                     for neighbor in edge.link_faces:
                         if neighbor is face or neighbor in selected:
                             continue
-                        if face.normal.angle(neighbor.normal, 0.0) > max_step_angle:
-                            continue
-                        if neighbor.normal.angle(avg, 0.0) > max_seed_angle:
-                            continue
+                        if settings.grow_use_angle_limits:
+                            if face.normal.angle(neighbor.normal, 0.0) > max_step_angle:
+                                continue
+                            if neighbor.normal.angle(avg, 0.0) > max_seed_angle:
+                                continue
                         to_add.add(neighbor)
             if not to_add:
                 break
@@ -565,7 +573,8 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
             added_total += len(to_add)
 
         bmesh.update_edit_mesh(obj.data)
-        self.report({"INFO"}, f"Grow Smart: +{added_total} caras.")
+        mode = "angle-limited" if settings.grow_use_angle_limits else "surface"
+        self.report({"INFO"}, f"Grow {mode}: +{added_total} caras.")
         return {"FINISHED"}
 
 
@@ -720,6 +729,7 @@ class SPLIT3R_PT_panel(Panel):
         layout.prop(settings, "smart_angle")
         layout.prop(settings, "smart_step_angle")
         layout.prop(settings, "grow_steps")
+        layout.prop(settings, "grow_use_angle_limits")
         layout.operator("split3r.smart_shell_select", icon="RESTRICT_SELECT_OFF")
         row = layout.row(align=True)
         row.operator("split3r.grow_smart_selection", text="Grow", icon="ADD")
