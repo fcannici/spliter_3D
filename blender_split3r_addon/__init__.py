@@ -18,7 +18,7 @@ from zipfile import ZipFile
 
 import bpy
 import bmesh
-from bpy.props import BoolProperty, FloatProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, FloatProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Operator, Panel, PropertyGroup
 from bpy_extras.io_utils import ImportHelper
 from mathutils import Vector
@@ -64,6 +64,23 @@ class Split3rSettings(PropertyGroup):
         name="Keep cutter",
         description="Keep the hidden cutter object after socket generation",
         default=True,
+    )
+    apply_output_modifiers: BoolProperty(
+        name="Apply plug/cutter solidify",
+        description="Apply Solidify on generated plug/cutter so the result is real mesh geometry for inspection/export",
+        default=True,
+    )
+    repair_outputs: BoolProperty(
+        name="Repair generated meshes",
+        description="Fill remaining boundary holes and recalculate normals on generated plug/cutter meshes",
+        default=True,
+    )
+    grow_steps: IntProperty(
+        name="Grow steps",
+        description="How many rings to add with Grow Smart Selection",
+        default=1,
+        min=1,
+        max=50,
     )
     save_imported_stl: BoolProperty(
         name="Save STL copy",
@@ -143,6 +160,57 @@ def _add_solidify(obj, thickness, name="Split3r Solidify"):
     mod.use_rim_only = False
     mod.show_on_cage = True
     return mod
+
+
+def _repair_mesh_object(obj):
+    previous_active = bpy.context.view_layer.objects.active
+    previous_mode = previous_active.mode if previous_active is not None else "OBJECT"
+    if previous_active is not None and previous_mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    mesh = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+    if bm.verts:
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=0.0001)
+    boundary_edges = [edge for edge in bm.edges if edge.is_boundary]
+    filled = 0
+    if boundary_edges:
+        try:
+            result = bmesh.ops.holes_fill(bm, edges=boundary_edges, sides=0)
+            filled = len(result.get("faces", []))
+        except Exception:
+            filled = 0
+    if bm.faces:
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update(calc_edges=True)
+
+    if previous_active is not None:
+        bpy.context.view_layer.objects.active = previous_active
+        if previous_mode != "OBJECT":
+            bpy.ops.object.mode_set(mode=previous_mode)
+    return {"boundary_edges_before": len(boundary_edges), "filled_faces": filled}
+
+
+def _apply_modifier(obj, modifier_name):
+    previous_active = bpy.context.view_layer.objects.active
+    previous_mode = previous_active.mode if previous_active is not None else "OBJECT"
+    if previous_active is not None and previous_mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    bpy.ops.object.modifier_apply(modifier=modifier_name)
+    if previous_active is not None:
+        bpy.context.view_layer.objects.active = previous_active
+        if previous_mode != "OBJECT":
+            bpy.ops.object.mode_set(mode=previous_mode)
 
 
 def _parse_3mf_transform(value: str | None):
@@ -445,6 +513,101 @@ class SPLIT3R_OT_smart_shell_select(Operator):
         return {"FINISHED"}
 
 
+class SPLIT3R_OT_grow_smart_selection(Operator):
+    bl_idname = "split3r.grow_smart_selection"
+    bl_label = "Grow Smart Selection"
+    bl_description = "Expand the current face selection by controlled angle-limited rings"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = _ensure_mesh_object(context)
+        settings = context.scene.split3r_settings
+        if obj.mode != "EDIT":
+            bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="FACE")
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        selected = {face for face in bm.faces if face.select}
+        if not selected:
+            self.report({"ERROR"}, "Seleccioná al menos una cara antes de ampliar.")
+            return {"CANCELLED"}
+
+        max_step_angle = math.radians(settings.smart_step_angle)
+        max_seed_angle = math.radians(settings.smart_angle)
+        avg = Vector((0.0, 0.0, 0.0))
+        for face in selected:
+            avg += face.normal
+        if avg.length > 0:
+            avg.normalize()
+        else:
+            avg = next(iter(selected)).normal.copy()
+
+        added_total = 0
+        for _ in range(settings.grow_steps):
+            to_add = set()
+            for face in selected:
+                for edge in face.edges:
+                    if len(edge.link_faces) != 2:
+                        continue
+                    for neighbor in edge.link_faces:
+                        if neighbor is face or neighbor in selected:
+                            continue
+                        if face.normal.angle(neighbor.normal, 0.0) > max_step_angle:
+                            continue
+                        if neighbor.normal.angle(avg, 0.0) > max_seed_angle:
+                            continue
+                        to_add.add(neighbor)
+            if not to_add:
+                break
+            for face in to_add:
+                face.select_set(True)
+            selected.update(to_add)
+            added_total += len(to_add)
+
+        bmesh.update_edit_mesh(obj.data)
+        self.report({"INFO"}, f"Grow Smart: +{added_total} caras.")
+        return {"FINISHED"}
+
+
+class SPLIT3R_OT_shrink_smart_selection(Operator):
+    bl_idname = "split3r.shrink_smart_selection"
+    bl_label = "Shrink Smart Selection"
+    bl_description = "Remove one boundary ring from the current face selection"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        obj = _ensure_mesh_object(context)
+        settings = context.scene.split3r_settings
+        if obj.mode != "EDIT":
+            bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="FACE")
+        bm = bmesh.from_edit_mesh(obj.data)
+        bm.faces.ensure_lookup_table()
+        selected = {face for face in bm.faces if face.select}
+        if not selected:
+            self.report({"ERROR"}, "No hay selección para reducir.")
+            return {"CANCELLED"}
+
+        removed_total = 0
+        for _ in range(settings.grow_steps):
+            boundary = set()
+            for face in selected:
+                for edge in face.edges:
+                    if len(edge.link_faces) != 2 or any(neighbor not in selected for neighbor in edge.link_faces):
+                        boundary.add(face)
+                        break
+            if not boundary or boundary == selected:
+                break
+            for face in boundary:
+                face.select_set(False)
+            selected.difference_update(boundary)
+            removed_total += len(boundary)
+
+        bmesh.update_edit_mesh(obj.data)
+        self.report({"INFO"}, f"Shrink Smart: -{removed_total} caras.")
+        return {"FINISHED"}
+
+
 class SPLIT3R_OT_create_plug_socket(Operator):
     bl_idname = "split3r.create_plug_socket"
     bl_label = "Create Plug + Socket"
@@ -465,7 +628,7 @@ class SPLIT3R_OT_create_plug_socket(Operator):
 
         short_name = source.name[:40]
         plug = _mesh_from_faces(source, face_indices, f"Split3r_Plug_{short_name}")
-        _add_solidify(plug, settings.plug_depth, "Split3r Plug Thickness")
+        plug_mod = _add_solidify(plug, settings.plug_depth, "Split3r Plug Thickness")
 
         # Cutter is a separate solidified copy. Slightly thicker than plug for socket clearance.
         cutter = plug.copy()
@@ -474,7 +637,16 @@ class SPLIT3R_OT_create_plug_socket(Operator):
         cutter.data.name = f"Split3r_Socket_CutterMesh_{source.data.name[:40]}"
         context.collection.objects.link(cutter)
         cutter.modifiers.clear()
-        _add_solidify(cutter, settings.plug_depth + settings.socket_clearance, "Split3r Socket Cutter Thickness")
+        cutter_mod = _add_solidify(cutter, settings.plug_depth + settings.socket_clearance, "Split3r Socket Cutter Thickness")
+
+        repair_notes = []
+        if settings.apply_output_modifiers:
+            _apply_modifier(plug, plug_mod.name)
+            _apply_modifier(cutter, cutter_mod.name)
+        if settings.repair_outputs:
+            repair_notes.append((plug.name, _repair_mesh_object(plug)))
+            repair_notes.append((cutter.name, _repair_mesh_object(cutter)))
+
         cutter.display_type = "WIRE"
         cutter.hide_render = True
         cutter.hide_viewport = False
@@ -496,7 +668,11 @@ class SPLIT3R_OT_create_plug_socket(Operator):
         plug.select_set(True)
         source.select_set(True)
         context.view_layer.objects.active = plug
-        self.report({"INFO"}, "Plug/socket creado con Solidify + Boolean EXACT. Revisá el cutter antes de aplicar si hace falta.")
+        note = "Plug/socket creado con Solidify + Boolean EXACT."
+        if repair_notes:
+            filled = sum(item[1].get("filled_faces", 0) for item in repair_notes)
+            note += f" Repair: {filled} caras de cierre agregadas."
+        self.report({"INFO"}, note)
         return {"FINISHED"}
 
 
@@ -543,7 +719,12 @@ class SPLIT3R_PT_panel(Panel):
         layout.label(text="2) Selección")
         layout.prop(settings, "smart_angle")
         layout.prop(settings, "smart_step_angle")
+        layout.prop(settings, "grow_steps")
         layout.operator("split3r.smart_shell_select", icon="RESTRICT_SELECT_OFF")
+        row = layout.row(align=True)
+        row.operator("split3r.grow_smart_selection", text="Grow", icon="ADD")
+        row.operator("split3r.shrink_smart_selection", text="Shrink", icon="REMOVE")
+        layout.label(text="Shortcuts: Ctrl+Wheel Up/Down", icon="INFO")
 
         layout.separator()
         layout.label(text="3) Plug / Socket")
@@ -551,6 +732,8 @@ class SPLIT3R_PT_panel(Panel):
         layout.prop(settings, "socket_clearance")
         layout.prop(settings, "apply_boolean")
         layout.prop(settings, "keep_cutter")
+        layout.prop(settings, "apply_output_modifiers")
+        layout.prop(settings, "repair_outputs")
         layout.operator("split3r.create_plug_socket", icon="MOD_BOOLEAN")
 
         layout.separator()
@@ -567,12 +750,17 @@ class SPLIT3R_PT_panel(Panel):
         box.operator("split3r.write_threadwell_request", icon="TEXT")
 
 
+_KEYMAPS = []
+
+
 _CLASSES = (
     Split3rSettings,
     SPLIT3R_OT_import_3mf,
     SPLIT3R_OT_pick_ai_test_file,
     SPLIT3R_OT_write_threadwell_request,
     SPLIT3R_OT_smart_shell_select,
+    SPLIT3R_OT_grow_smart_selection,
+    SPLIT3R_OT_shrink_smart_selection,
     SPLIT3R_OT_create_plug_socket,
     SPLIT3R_OT_export_selected_stl,
     SPLIT3R_PT_panel,
@@ -584,8 +772,23 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Scene.split3r_settings = PointerProperty(type=Split3rSettings)
 
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.addon if wm is not None else None
+    if kc is not None:
+        km = kc.keymaps.new(name="Mesh", space_type="EMPTY")
+        kmi = km.keymap_items.new("split3r.grow_smart_selection", type="WHEELUPMOUSE", value="PRESS", ctrl=True)
+        _KEYMAPS.append((km, kmi))
+        kmi = km.keymap_items.new("split3r.shrink_smart_selection", type="WHEELDOWNMOUSE", value="PRESS", ctrl=True)
+        _KEYMAPS.append((km, kmi))
+
 
 def unregister():
+    for km, kmi in _KEYMAPS:
+        try:
+            km.keymap_items.remove(kmi)
+        except Exception:
+            pass
+    _KEYMAPS.clear()
     if hasattr(bpy.types.Scene, "split3r_settings"):
         del bpy.types.Scene.split3r_settings
     for cls in reversed(_CLASSES):
