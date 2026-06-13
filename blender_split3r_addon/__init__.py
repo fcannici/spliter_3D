@@ -216,7 +216,8 @@ def _load_3mf_meshes(filepath):
 
 
 def _export_object_stl(obj, filepath):
-    bpy.ops.object.mode_set(mode="OBJECT")
+    if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
     for item in bpy.context.scene.objects:
         item.select_set(False)
     obj.select_set(True)
@@ -225,6 +226,63 @@ def _export_object_stl(obj, filepath):
         bpy.ops.wm.stl_export(filepath=filepath, export_selected_objects=True)
     else:
         bpy.ops.export_mesh.stl(filepath=filepath, use_selection=True)
+
+
+def _select_created_objects(context, created):
+    for obj in context.scene.objects:
+        obj.select_set(False)
+    for obj in created:
+        obj.select_set(True)
+    if created:
+        context.view_layer.objects.active = created[0]
+
+
+def _create_mesh_objects_from_3mf(context, filepath):
+    meshes = _load_3mf_meshes(filepath)
+    if not meshes:
+        raise RuntimeError("El 3MF no contiene mallas compatibles.")
+
+    created = []
+    base = Path(filepath).stem
+    for index, (_model_name, vertices, faces) in enumerate(meshes, start=1):
+        name = base if len(meshes) == 1 else f"{base}_{index}"
+        mesh = bpy.data.meshes.new(f"{name}_mesh")
+        mesh.from_pydata(vertices, [], faces)
+        mesh.update(calc_edges=True)
+        obj = bpy.data.objects.new(name, mesh)
+        context.collection.objects.link(obj)
+        created.append(obj)
+    _select_created_objects(context, created)
+    return created
+
+
+def _import_file_to_viewport(context, filepath, save_stl_copy=False):
+    if bpy.context.object is not None and bpy.context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    before = set(context.scene.objects)
+    ext = Path(filepath).suffix.lower()
+    if ext == ".3mf":
+        created = _create_mesh_objects_from_3mf(context, filepath)
+        if save_stl_copy and created:
+            _export_object_stl(created[0], os.path.splitext(filepath)[0] + ".stl")
+        return created
+    if ext == ".stl":
+        if hasattr(bpy.ops.wm, "stl_import"):
+            bpy.ops.wm.stl_import(filepath=filepath)
+        else:
+            bpy.ops.import_mesh.stl(filepath=filepath)
+    elif ext == ".obj":
+        if hasattr(bpy.ops.wm, "obj_import"):
+            bpy.ops.wm.obj_import(filepath=filepath)
+        else:
+            bpy.ops.import_scene.obj(filepath=filepath)
+    else:
+        raise RuntimeError(f"Formato no soportado: {ext}")
+    created = [obj for obj in context.scene.objects if obj not in before]
+    if not created and context.object is not None:
+        created = [context.object]
+    _select_created_objects(context, created)
+    return created
 
 
 class SPLIT3R_OT_import_3mf(Operator, ImportHelper):
@@ -239,52 +297,38 @@ class SPLIT3R_OT_import_3mf(Operator, ImportHelper):
     def execute(self, context):
         settings = context.scene.split3r_settings
         try:
-            meshes = _load_3mf_meshes(self.filepath)
+            created = _import_file_to_viewport(context, self.filepath, settings.save_imported_stl)
         except Exception as exc:
-            self.report({"ERROR"}, f"No se pudo leer el 3MF: {exc}")
-            return {"CANCELLED"}
-        if not meshes:
-            self.report({"ERROR"}, "El 3MF no contiene mallas compatibles.")
+            self.report({"ERROR"}, f"No se pudo importar el 3MF: {exc}")
             return {"CANCELLED"}
 
-        created = []
-        base = Path(self.filepath).stem
-        for index, (_model_name, vertices, faces) in enumerate(meshes, start=1):
-            name = base if len(meshes) == 1 else f"{base}_{index}"
-            mesh = bpy.data.meshes.new(f"{name}_mesh")
-            mesh.from_pydata(vertices, [], faces)
-            mesh.update(calc_edges=True)
-            obj = bpy.data.objects.new(name, mesh)
-            context.collection.objects.link(obj)
-            created.append(obj)
-
-        for obj in context.scene.objects:
-            obj.select_set(False)
-        for obj in created:
-            obj.select_set(True)
-        context.view_layer.objects.active = created[0]
-
-        if settings.save_imported_stl:
+        if settings.save_imported_stl and created:
             stl_path = os.path.splitext(self.filepath)[0] + ".stl"
-            _export_object_stl(created[0], stl_path)
             self.report({"INFO"}, f"3MF importado y STL guardado: {stl_path}")
         else:
-            self.report({"INFO"}, f"3MF importado: {sum(len(obj.data.polygons) for obj in created)} caras.")
+            self.report({"INFO"}, f"3MF importado al viewport: {sum(len(obj.data.polygons) for obj in created if obj.type == 'MESH')} caras.")
         return {"FINISHED"}
 
 
 class SPLIT3R_OT_pick_ai_test_file(Operator, ImportHelper):
     bl_idname = "split3r.pick_ai_test_file"
-    bl_label = "Pick Test File"
-    bl_description = "Choose the file path that will be sent to Threadwell for testing"
-    bl_options = {"REGISTER"}
+    bl_label = "Pick + Import Test File"
+    bl_description = "Choose the file path for Threadwell and import it into the Blender viewport"
+    bl_options = {"REGISTER", "UNDO"}
 
     filename_ext = ".3mf"
     filter_glob: StringProperty(default="*.3mf;*.stl;*.obj", options={"HIDDEN"})
 
     def execute(self, context):
-        context.scene.split3r_settings.ai_test_file = self.filepath
-        self.report({"INFO"}, f"Archivo de prueba seleccionado: {self.filepath}")
+        settings = context.scene.split3r_settings
+        settings.ai_test_file = self.filepath
+        try:
+            created = _import_file_to_viewport(context, self.filepath, settings.save_imported_stl)
+        except Exception as exc:
+            self.report({"ERROR"}, f"Ruta seleccionada, pero no se pudo importar: {exc}")
+            return {"CANCELLED"}
+        faces = sum(len(obj.data.polygons) for obj in created if obj.type == "MESH")
+        self.report({"INFO"}, f"Archivo importado al viewport y listo para Threadwell: {faces} caras.")
         return {"FINISHED"}
 
 
@@ -307,6 +351,13 @@ class SPLIT3R_OT_write_threadwell_request(Operator):
 
         selected_face_indices = []
         active = context.object
+        if (active is None or active.type != "MESH") and Path(test_file).exists():
+            try:
+                created = _import_file_to_viewport(context, test_file, settings.save_imported_stl)
+                active = created[0] if created else context.object
+            except Exception as exc:
+                self.report({"WARNING"}, f"Request guardado, pero no se pudo importar al viewport: {exc}")
+                active = context.object
         if active is not None and active.type == "MESH":
             try:
                 selected_face_indices = _selected_face_indices(active)

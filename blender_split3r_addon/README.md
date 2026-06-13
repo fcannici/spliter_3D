@@ -35,9 +35,10 @@ El prototipo PyVista/VTK demostró que la selección funciona, pero la generaci�
 
 El panel incluye una sección **Threadwell Test Request**:
 
-1. Elegir el archivo en **Test file** o con **Pick Test File**.
-2. Escribir instrucciones en **Prompt**.
-3. Presionar **Send Request to Threadwell**.
+1. Elegir el archivo con **Pick + Import Test File**. Esto setea la ruta y también importa el `.3mf`/`.stl`/`.obj` al viewport.
+2. Seleccionar en Blender las caras/pieza que querés que Threadwell pruebe, si aplica.
+3. Escribir instrucciones en **Prompt**.
+4. Presionar **Send Request to Threadwell**.
 
 Esto guarda un JSON en:
 
