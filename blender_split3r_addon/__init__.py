@@ -488,12 +488,19 @@ class SPLIT3R_OT_smart_shell_select(Operator):
                 return {"CANCELLED"}
             active = selected[-1]
 
+        # Smart Shell is a replacement selection from the active seed face.
+        # If an old overgrown selection remains selected, leaving it active makes it look
+        # like the settings/script did not change because the old faces stay selected.
+        for face in bm.faces:
+            if face is not active:
+                face.select_set(False)
+        active.select_set(True)
+
         seed_normal = active.normal.copy()
         max_seed_angle = math.radians(settings.smart_angle)
         max_step_angle = math.radians(settings.smart_step_angle)
         visited = {active}
         queue = deque([active])
-        active.select_set(True)
 
         while queue:
             face = queue.popleft()
