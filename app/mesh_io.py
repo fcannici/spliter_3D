@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from pathlib import Path
 
 import numpy as np
@@ -71,6 +72,74 @@ def remove_triangle_artifacts(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     return cleaned
 
 
+def remove_open_sheet_artifacts(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Peel small open-sheet artifacts from slicer-derived 3MF meshes.
+
+    Some 3MF files are not clean design meshes: they contain thin internal/open membranes with
+    boundary loops. When the user paints near them those membranes become separated as strings or
+    face errors. Large boundary components and the build-plate bottom are preserved; only small
+    non-bottom open components are peeled iteratively.
+    """
+    cleaned = mesh.copy()
+    min_z = float(cleaned.bounds[0][2]) if cleaned.vertices.size else 0.0
+
+    for _ in range(60):
+        if cleaned.faces.size == 0:
+            break
+        face_edges = np.asarray(cleaned.faces_unique_edges, dtype=np.int64)
+        edge_use = np.bincount(face_edges.ravel(), minlength=len(cleaned.edges_unique))
+        boundary_edge_ids = np.where(edge_use == 1)[0]
+        if len(boundary_edge_ids) == 0:
+            break
+
+        edge_to_id = {tuple(edge): int(edge_id) for edge_id, edge in zip(boundary_edge_ids, cleaned.edges_unique[boundary_edge_ids])}
+        vertex_to_edges: dict[int, list[int]] = defaultdict(list)
+        for edge_id in boundary_edge_ids:
+            a, b = map(int, cleaned.edges_unique[int(edge_id)])
+            vertex_to_edges[a].append(int(edge_id))
+            vertex_to_edges[b].append(int(edge_id))
+
+        seen_edges: set[int] = set()
+        remove_edge_ids: set[int] = set()
+        for edge_id in map(int, boundary_edge_ids):
+            if edge_id in seen_edges:
+                continue
+            component_edges: set[int] = set()
+            component_vertices: set[int] = set()
+            queue: deque[int] = deque([edge_id])
+            seen_edges.add(edge_id)
+            while queue:
+                current = queue.popleft()
+                component_edges.add(current)
+                a, b = map(int, cleaned.edges_unique[current])
+                component_vertices.update((a, b))
+                for vertex in (a, b):
+                    for next_edge in vertex_to_edges[vertex]:
+                        if next_edge not in seen_edges:
+                            seen_edges.add(next_edge)
+                            queue.append(next_edge)
+
+            points = cleaned.vertices[list(component_vertices)]
+            edge_count = len(component_edges)
+            on_bottom = bool(len(points) and np.percentile(points[:, 2], 75) <= min_z + 0.05)
+            if 3 <= edge_count <= 500 and not on_bottom:
+                remove_edge_ids.update(component_edges)
+
+        if not remove_edge_ids:
+            break
+
+        remove_mask = np.isin(face_edges, list(remove_edge_ids)).any(axis=1)
+        if not np.any(remove_mask):
+            break
+        # Safety: do not peel too much of the model in one load pass.
+        if int(remove_mask.sum()) > max(25000, int(len(cleaned.faces) * 0.08)):
+            break
+        cleaned.update_faces(~remove_mask)
+        cleaned.remove_unreferenced_vertices()
+
+    return cleaned
+
+
 def load_trimesh(filepath: str | Path) -> trimesh.Trimesh:
     """Load STL/OBJ/3MF as a validated, triangular trimesh."""
     path = Path(filepath)
@@ -89,7 +158,8 @@ def load_trimesh(filepath: str | Path) -> trimesh.Trimesh:
     mesh.remove_unreferenced_vertices()
     if mesh.faces.shape[1] != 3:
         raise ValueError("Solo se soportan mallas trianguladas.")
-    return remove_triangle_artifacts(mesh)
+    mesh = remove_triangle_artifacts(mesh)
+    return remove_open_sheet_artifacts(mesh)
 
 
 def trimesh_to_polydata(mesh: trimesh.Trimesh) -> pv.PolyData:

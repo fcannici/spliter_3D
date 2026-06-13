@@ -3,7 +3,7 @@ import pyvista as pv
 
 import trimesh
 
-from app.mesh_io import polydata_to_trimesh, remove_triangle_artifacts, trimesh_to_polydata, validate_polydata
+from app.mesh_io import polydata_to_trimesh, remove_open_sheet_artifacts, remove_triangle_artifacts, trimesh_to_polydata, validate_polydata
 
 
 def test_polydata_trimesh_roundtrip_triangle():
@@ -42,5 +42,38 @@ def test_remove_triangle_artifacts_drops_needles_but_keeps_normal_faces():
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
 
     cleaned = remove_triangle_artifacts(mesh)
+
+    assert len(cleaned.faces) == 2
+
+
+def test_remove_open_sheet_artifacts_peels_small_non_bottom_sheet():
+    vertices = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+            [2, 0, 1],
+            [2, 1, 1],
+        ],
+        dtype=float,
+    )
+    faces = np.array(
+        [
+            [0, 1, 2],
+            [0, 2, 3],  # bottom open component, preserved
+            [4, 5, 6],
+            [4, 6, 7],  # small non-bottom open sheet, removed
+            [5, 8, 9],
+            [5, 9, 6],  # same small sheet extension, removed
+        ]
+    )
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+
+    cleaned = remove_open_sheet_artifacts(mesh)
 
     assert len(cleaned.faces) == 2

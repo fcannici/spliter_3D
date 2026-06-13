@@ -411,6 +411,7 @@ class Split3rClone(QMainWindow):
             elif cid != self.last_hover_face:
                 self.last_hover_face = cid
                 hover_indices = self.compute_smart_shell_region(cid)
+                hover_indices = self.filter_visible_brush_indices(hit_pos, hover_indices)
                 self.current_mesh.cell_data["Hover"][:] = 0
                 self.current_mesh.cell_data["Hover"][hover_indices] = 1
                 self.update_visuals()
@@ -450,6 +451,7 @@ class Split3rClone(QMainWindow):
         if hit_pos and cid != -1:
             if self.radio_bucket.isChecked():
                 indices = self.compute_smart_shell_region(cid)
+                indices = self.filter_visible_brush_indices(hit_pos, indices)
             else:
                 indices = self.kdtree.query_ball_point(hit_pos, r=self.brush_radius)
                 indices = self.filter_visible_brush_indices(hit_pos, indices)

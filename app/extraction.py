@@ -6,7 +6,7 @@ import numpy as np
 import pyvista as pv
 from scipy.spatial import Delaunay
 
-from .mesh_io import validate_polydata
+from .mesh_io import polydata_to_trimesh, remove_triangle_artifacts, trimesh_to_polydata, validate_polydata
 
 _ORIGINAL_CELL_ID = "_split3r_original_cell_id"
 _SELECTION_CLOSING_STEPS = 5
@@ -383,16 +383,8 @@ def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) ->
         wall_pts.extend(bottom_points)
         n = len(top_points)
 
-        loop_edge_lengths = np.linalg.norm(np.roll(top_points, -1, axis=0) - top_points, axis=1)
-        median_edge = float(np.median(loop_edge_lengths)) if len(loop_edge_lengths) else 0.0
-        max_wall_edge = max(float(np.percentile(loop_edge_lengths, 90) * 3.0), median_edge * 8.0, 1e-6)
-
         for i in range(n):
             j = (i + 1) % n
-            # Badly ordered scan boundaries occasionally contain one huge bridge edge; drawing a
-            # side wall on that edge creates the long black needles still visible in captura4.
-            if float(loop_edge_lengths[i]) > max_wall_edge:
-                continue
             top_i = wall_base + i
             top_j = wall_base + j
             bot_i = wall_base + n + i
@@ -410,6 +402,46 @@ def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) ->
         cap_mesh = cap_mesh.append_polydata(extra_cap)
     cap_mesh = cap_mesh.clean().triangulate() if cap_meshes else _empty_polydata()
     return walls_mesh, cap_mesh
+
+
+def _boundary_edge_count(mesh: pv.PolyData) -> int:
+    if mesh.n_cells == 0:
+        return 0
+    edges = mesh.extract_feature_edges(
+        boundary_edges=True,
+        non_manifold_edges=False,
+        feature_edges=False,
+        manifold_edges=False,
+    )
+    return int(edges.n_cells)
+
+
+def _repair_extracted_mesh(mesh: pv.PolyData, extrude_depth: float) -> pv.PolyData:
+    """Final pass to remove source/output needles and cap small extraction cracks.
+
+    Earlier versions skipped suspicious wall edges, which reduced needles but left visible open
+    holes. This pass keeps the full wall loop, then removes only extreme sliver triangles and
+    fills small boundary cracks left by imperfect scan topology. Large model openings are not
+    targeted; the hole size is tied to extraction thickness.
+    """
+    if mesh.n_cells == 0:
+        return mesh
+
+    repaired = mesh.clean().triangulate()
+    try:
+        repaired = trimesh_to_polydata(remove_triangle_artifacts(polydata_to_trimesh(repaired))).clean().triangulate()
+    except Exception:
+        repaired = repaired.clean().triangulate()
+
+    hole_size = max(2.5, float(extrude_depth) * 4.0)
+    try:
+        filled = repaired.fill_holes(hole_size=hole_size).clean().triangulate()
+        if filled.n_cells > 0 and _boundary_edge_count(filled) <= _boundary_edge_count(repaired):
+            repaired = filled
+    except Exception:
+        pass
+
+    return repaired.clean().triangulate()
 
 
 def extract_plug_socket(current_mesh: pv.PolyData, selected_cells: set[int], extrude_depth: float) -> tuple[pv.PolyData, pv.PolyData]:
@@ -457,6 +489,9 @@ def extract_plug_socket(current_mesh: pv.PolyData, selected_cells: set[int], ext
     remaining_ids = sorted(set(range(current_mesh.n_cells)) - valid_selection)
     remaining_surface = current_mesh.extract_cells(remaining_ids).extract_surface().triangulate()
     body_mesh = remaining_surface.append_polydata(walls_mesh.copy()).append_polydata(socket_floor.copy()).clean().triangulate()
+
+    plug_mesh = _repair_extracted_mesh(plug_mesh, extrude_depth)
+    body_mesh = _repair_extracted_mesh(body_mesh, extrude_depth)
 
     for mesh in (plug_mesh, body_mesh):
         if _ORIGINAL_CELL_ID in mesh.cell_data:
