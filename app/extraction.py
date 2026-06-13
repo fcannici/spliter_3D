@@ -307,33 +307,46 @@ def _triangulate_cap(bottom_points: np.ndarray, normal: np.ndarray) -> pv.PolyDa
     if len(bottom_points) < 3 or _polygon_area(points_2d) <= 1e-8:
         return _empty_polydata()
 
+    # Prefer VTK's constrained 2D triangulation with the boundary as edge_source. The previous
+    # unconstrained scipy Delaunay + long-triangle rejection often left holes in concave organic
+    # cuts. A constrained cap fills the loop while respecting its silhouette.
+    if len(bottom_points) <= 250:
+        try:
+            point_cloud = pv.PolyData(bottom_points)
+            edge_source = pv.PolyData(bottom_points)
+            edge_source.lines = np.asarray(
+                [item for i in range(len(bottom_points)) for item in (2, i, (i + 1) % len(bottom_points))],
+                dtype=np.int64,
+            )
+            cap = point_cloud.delaunay_2d(edge_source=edge_source).clean().triangulate()
+            if cap.n_cells > 0:
+                return cap
+        except Exception:
+            pass
+
     try:
         simplices = Delaunay(points_2d).simplices
     except Exception:
-        # Safe fallback: no cap is better than a huge crossing fin.
         return _empty_polydata()
 
     centroids = points_2d[simplices].mean(axis=1)
     inside = _points_in_polygon(centroids, points_2d)
 
-    edge_lengths = np.linalg.norm(np.diff(np.vstack([points_2d, points_2d[0]]), axis=0), axis=1)
-    max_reasonable_edge = max(float(np.percentile(edge_lengths, 90) * 3.0), float(edge_lengths.mean() * 4.0), 1e-6)
-
     faces: list[int] = []
     for tri in simplices[inside]:
-        tri_pts = points_2d[tri]
-        tri_edges = [
-            np.linalg.norm(tri_pts[0] - tri_pts[1]),
-            np.linalg.norm(tri_pts[1] - tri_pts[2]),
-            np.linalg.norm(tri_pts[2] - tri_pts[0]),
-        ]
-        if max(tri_edges) > max_reasonable_edge:
-            continue
         faces.extend([3, int(tri[0]), int(tri[1]), int(tri[2])])
 
     if not faces:
         return _empty_polydata()
     return pv.PolyData(bottom_points, np.asarray(faces)).clean().triangulate()
+
+
+def _resample_loop_points(points: np.ndarray, max_points: int = 1200) -> np.ndarray:
+    """Bound cap complexity for dense scan loops while preserving the ordered silhouette."""
+    if len(points) <= max_points:
+        return points
+    indices = np.linspace(0, len(points), max_points, endpoint=False, dtype=int)
+    return points[np.unique(indices)]
 
 
 def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) -> tuple[pv.PolyData, pv.PolyData]:
@@ -347,23 +360,37 @@ def _make_clean_cut_geometry(part_surface: pv.PolyData, extrude_depth: float) ->
     loops = _boundary_loops(part_surface)
 
     loop_data = []
+    rejected_loop_data = []
     u, v = _basis_from_normal(normal)
     for loop in loops:
         top_points = np.asarray([part_surface.points[pid] for pid in loop], dtype=float)
+        top_points = _resample_loop_points(top_points)
         center = top_points.mean(axis=0)
         points_2d = np.column_stack(((top_points - center) @ u, (top_points - center) @ v))
         area = _polygon_area(points_2d)
-        if area > 1e-8:
-            loop_data.append((area, top_points))
+        if area <= 1e-8 or len(top_points) < 8:
+            continue
+        edge_lengths = np.linalg.norm(np.roll(top_points, -1, axis=0) - top_points, axis=1)
+        median_edge = float(np.median(edge_lengths)) if len(edge_lengths) else 0.0
+        bridge_limit = max(float(np.percentile(edge_lengths, 90) * 4.0), median_edge * 12.0, float(extrude_depth) * 8.0, 1.0)
+        entry = (area, top_points)
+        if float(edge_lengths.max(initial=0.0)) <= bridge_limit:
+            loop_data.append(entry)
+        else:
+            rejected_loop_data.append(entry)
 
+    if not loop_data:
+        loop_data = rejected_loop_data
     if not loop_data:
         raise ValueError("El borde de la selección no tiene área suficiente para generar una tapa limpia.")
 
-    # Keep only the dominant outer cut loop. Secondary loops are usually holes left by
-    # imperfect brush selection on teeth/scan noise; creating walls around them produces the
-    # visible curtains/fins shown in the QA captures.
-    loop_data = [max(loop_data, key=lambda item: item[0])]
-    if loop_data[0][1].shape[0] < 8:
+    dominant_area = max(area for area, _points in loop_data)
+    min_area = max(dominant_area * 0.015, 0.05)
+    # Keep every significant clean loop. Keeping only the dominant loop closed fewer walls, but it
+    # left visible open holes when the selected shell had real secondary boundaries. Tiny loops are
+    # still ignored because they produce the curtain/fins seen around teeth and scan noise.
+    loop_data = [(area, points) for area, points in loop_data if area >= min_area]
+    if not loop_data:
         raise ValueError("Solo se encontraron loops de borde pequeños o ruidosos.")
 
     wall_pts: list[np.ndarray] = []
