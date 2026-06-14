@@ -73,17 +73,21 @@ class PaintInteractor(QtInteractor):
         super().keyReleaseEvent(ev)
 
     def _should_paint(self, ev) -> bool:
-        if self.main_window is None:
-            return False
-        if self.space_navigation:
+        if self.main_window is None or self.space_navigation:
             return False
         modifiers = ev.modifiers()
-        return self.main_window.paint_enabled_checkbox.isChecked() or bool(
-            modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
-        )
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            return True
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            return True
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            return True
+        return bool(self.main_window.paint_enabled_checkbox.isChecked())
 
     def _mode_from_event(self, ev) -> str:
         modifiers = ev.modifiers()
+        if modifiers & Qt.KeyboardModifier.ShiftModifier:
+            return "erase"
         if modifiers & Qt.KeyboardModifier.AltModifier:
             return "exclude"
         if modifiers & Qt.KeyboardModifier.ControlModifier:
@@ -146,9 +150,10 @@ class Split3rStandalone(QMainWindow):
         layout = QHBoxLayout(self.central)
         self.plotter = PaintInteractor(self)
         layout.addWidget(self.plotter.interactor)
-        self.plotter.set_background("#f3f1e7")
+        self.plotter.set_background("#d8d6cd")
         self.plotter.add_axes()
-        self.plotter.enable_terrain_style()
+        self.plotter.enable_trackball_style()
+        self.plotter.enable_eye_dome_lighting()
 
         self._build_menu()
         self._build_panel()
@@ -184,8 +189,8 @@ class Split3rStandalone(QMainWindow):
 
         view_group = QGroupBox("0) View / Inspect")
         view_layout = QVBoxLayout(view_group)
-        self.show_edges_checkbox = QCheckBox("Show mesh edges")
-        self.show_edges_checkbox.setChecked(False)
+        self.show_edges_checkbox = QCheckBox("Show mesh edges / ver triángulos")
+        self.show_edges_checkbox.setChecked(True)
         self.show_edges_checkbox.stateChanged.connect(self.apply_display_options)
         view_layout.addWidget(self.show_edges_checkbox)
         self.show_original_checkbox = QCheckBox("Show original model")
@@ -215,10 +220,10 @@ class Split3rStandalone(QMainWindow):
         for btn in (self.include_radio, self.exclude_radio, self.erase_radio):
             self.mode_group.addButton(btn)
             paint_layout.addWidget(btn)
-        self.paint_enabled_checkbox = QCheckBox("Paint enabled / herramienta pintura activa")
-        self.paint_enabled_checkbox.setChecked(True)
+        self.paint_enabled_checkbox = QCheckBox("Continuous paint with left click")
+        self.paint_enabled_checkbox.setChecked(False)
         paint_layout.addWidget(self.paint_enabled_checkbox)
-        paint_layout.addWidget(QLabel("Dejalo activo: click izquierdo pinta; rueda/derecho/medio navegan. Mantené Espacio + click izquierdo para orbitar sin apagar pintura. Ctrl pinta Include; Alt pinta Exclude."))
+        paint_layout.addWidget(QLabel("Recomendado: dejalo apagado para navegar normal. Ctrl+arrastrar pinta Include, Alt+arrastrar pinta Exclude, Shift+arrastrar borra. Si activás Continuous paint, click izquierdo pinta siempre."))
         self.brush_label = QLabel("Brush radius: 2.0")
         paint_layout.addWidget(self.brush_label)
         self.brush_slider = QSlider(Qt.Orientation.Horizontal)
@@ -274,7 +279,10 @@ class Split3rStandalone(QMainWindow):
         self.export_selected_btn = QPushButton("Export Selected Piece STL")
         self.export_selected_btn.clicked.connect(self.export_selected_piece)
         extract_layout.addWidget(self.export_selected_btn)
-        self.extract_btn = QPushButton("Extract Plug + Socket")
+        self.visual_cut_btn = QPushButton("Inspect Cut - Preserve Original Holes")
+        self.visual_cut_btn.clicked.connect(self.inspect_visual_cut)
+        extract_layout.addWidget(self.visual_cut_btn)
+        self.extract_btn = QPushButton("Prototype Plug + Socket (may repair holes)")
         self.extract_btn.clicked.connect(self.extract_selection)
         extract_layout.addWidget(self.extract_btn)
         self.export_btn = QPushButton("Export Last Plug + Body")
@@ -467,7 +475,7 @@ class Split3rStandalone(QMainWindow):
         self.current_mesh.cell_data["split3r_color"] = self._cell_colors()
         self.plotter.update_scalars(self.current_mesh.cell_data["split3r_color"], mesh=self.current_mesh, render=True)
 
-    def _selected_piece_surface(self) -> pv.PolyData:
+    def _selection_ids(self) -> list[int]:
         if self.current_mesh is None:
             raise ValueError("Primero importá un modelo.")
         if not self.paint_state.include_faces:
@@ -475,28 +483,83 @@ class Split3rStandalone(QMainWindow):
         valid = sorted(face for face in self.paint_state.include_faces if 0 <= face < self.current_mesh.n_cells)
         if not valid:
             raise ValueError("La selección no contiene caras válidas.")
-        return self.current_mesh.extract_cells(valid).extract_surface().triangulate().clean()
+        return valid
+
+    def _selected_piece_surface(self) -> pv.PolyData:
+        valid = self._selection_ids()
+        return self.current_mesh.extract_cells(valid).extract_surface().triangulate()
+
+    def _body_without_selection_surface(self) -> pv.PolyData:
+        if self.current_mesh is None:
+            raise ValueError("Primero importá un modelo.")
+        selected = set(self._selection_ids())
+        remaining = [i for i in range(self.current_mesh.n_cells) if i not in selected]
+        if not remaining:
+            raise ValueError("La selección cubre todo el mesh.")
+        return self.current_mesh.extract_cells(remaining).extract_surface().triangulate()
+
+    def _set_explode_from_meshes(self, piece: pv.PolyData, body: pv.PolyData | None = None) -> None:
+        if body is not None:
+            vec = np.asarray(piece.center, dtype=float) - np.asarray(body.center, dtype=float)
+        elif self.current_mesh is not None:
+            vec = np.asarray(piece.center, dtype=float) - np.asarray(self.current_mesh.center, dtype=float)
+        else:
+            vec = np.array([1.0, 0.0, 0.0], dtype=float)
+        norm = float(np.linalg.norm(vec))
+        self.explode_vector = vec / norm if norm > 1e-9 else np.array([1.0, 0.0, 0.0], dtype=float)
+
+    def _show_piece_and_body(self, piece: pv.PolyData, body: pv.PolyData | None, status: str) -> None:
+        if self.plug_actor is not None:
+            self.plotter.remove_actor(self.plug_actor)
+        if self.body_actor is not None:
+            self.plotter.remove_actor(self.body_actor)
+        self._set_explode_from_meshes(piece, body)
+        if body is not None:
+            self.body_actor = self.plotter.add_mesh(
+                body,
+                color="#b7b096",
+                opacity=0.55,
+                show_edges=self.show_edges_checkbox.isChecked(),
+                smooth_shading=True,
+                ambient=0.45,
+                diffuse=0.8,
+            )
+        self.plug_actor = self.plotter.add_mesh(
+            piece,
+            color="#d98613",
+            opacity=1.0,
+            show_edges=self.show_edges_checkbox.isChecked(),
+            smooth_shading=True,
+            ambient=0.45,
+            diffuse=0.8,
+        )
+        self.show_original_checkbox.setChecked(body is None)
+        self.explode_slider.setValue(max(self.explode_slider.value(), 18))
+        self.update_explode_position()
+        self.apply_display_options()
+        self.plotter.render()
+        self.status_label.setText(status)
+
+    def inspect_visual_cut(self) -> None:
+        try:
+            piece = self._selected_piece_surface()
+            body = self._body_without_selection_surface()
+            self.last_plug = piece
+            self.last_body = body
+            self.export_btn.setEnabled(True)
+            self._show_piece_and_body(
+                piece,
+                body,
+                f"Corte visual sin reparar: pieza {piece.n_cells} faces | body {body.n_cells} faces. No cierra agujeros originales; usá Explode y edges para revisar la hendidura.",
+            )
+        except Exception as exc:  # noqa: BLE001 - UI boundary
+            logger.exception("Visual cut failed")
+            self.status_label.setText(f"Error corte visual: {exc}")
 
     def preview_selected_piece(self) -> None:
         try:
             piece = self._selected_piece_surface()
-            if self.plug_actor is not None:
-                self.plotter.remove_actor(self.plug_actor)
-            if self.current_mesh is not None:
-                vec = np.asarray(piece.center, dtype=float) - np.asarray(self.current_mesh.center, dtype=float)
-                norm = float(np.linalg.norm(vec))
-                self.explode_vector = vec / norm if norm > 1e-9 else np.array([1.0, 0.0, 0.0], dtype=float)
-            self.plug_actor = self.plotter.add_mesh(
-                piece,
-                color="#d98613",
-                opacity=1.0,
-                show_edges=self.show_edges_checkbox.isChecked(),
-                smooth_shading=True,
-            )
-            self.explode_slider.setValue(max(self.explode_slider.value(), 15))
-            self.update_explode_position()
-            self.plotter.render()
-            self.status_label.setText(f"Preview selected piece: {piece.n_cells} faces. Usá Explode para separarla y revisar.")
+            self._show_piece_and_body(piece, None, f"Preview selected piece: {piece.n_cells} faces. Usá Explode para separarla y revisar.")
         except Exception as exc:  # noqa: BLE001 - UI boundary
             logger.exception("Selected preview failed")
             self.status_label.setText(f"Error preview selección: {exc}")
@@ -531,30 +594,12 @@ class Split3rStandalone(QMainWindow):
                 self.plotter.remove_actor(self.plug_actor)
             if self.body_actor is not None:
                 self.plotter.remove_actor(self.body_actor)
-            vec = np.asarray(plug.center, dtype=float) - np.asarray(body.center, dtype=float)
-            norm = float(np.linalg.norm(vec))
-            self.explode_vector = vec / norm if norm > 1e-9 else np.array([1.0, 0.0, 0.0], dtype=float)
-            self.body_actor = self.plotter.add_mesh(
-                body,
-                color="#bcb896",
-                opacity=0.40,
-                show_edges=self.show_edges_checkbox.isChecked(),
-                smooth_shading=True,
-            )
-            self.plug_actor = self.plotter.add_mesh(
-                plug,
-                color="#d98613",
-                opacity=1.0,
-                show_edges=self.show_edges_checkbox.isChecked(),
-                smooth_shading=True,
-            )
-            self.show_original_checkbox.setChecked(False)
-            self.explode_slider.setValue(20)
-            self.update_explode_position()
             self.export_btn.setEnabled(True)
-            self.apply_display_options()
-            self.plotter.render()
-            self.status_label.setText(f"Extracción lista. Plug faces: {plug.n_cells} | Body faces: {body.n_cells}. Usá Explode/Show edges para revisar cierres.")
+            self._show_piece_and_body(
+                plug,
+                body,
+                f"Prototype plug/socket listo. Plug faces: {plug.n_cells} | Body faces: {body.n_cells}. Ojo: este modo puede reparar/cerrar agujeros; para QA usá Inspect Cut.",
+            )
         except Exception as exc:  # noqa: BLE001 - UI boundary
             logger.exception("Extraction failed")
             self.status_label.setText(f"Error extrayendo: {exc}")
