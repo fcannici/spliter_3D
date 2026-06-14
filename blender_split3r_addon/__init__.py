@@ -13,6 +13,7 @@ import math
 import os
 import xml.etree.ElementTree as ET
 from collections import deque
+from statistics import median
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -622,6 +623,25 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                     if len(edge.link_faces) == 2 and any(neighbor not in selected for neighbor in edge.link_faces):
                         boundary_faces.append(face)
                         break
+            max_advance_distance = None
+            if not settings.grow_use_angle_limits and boundary_faces:
+                boundary_hops = []
+                for boundary_face in boundary_faces:
+                    boundary_center = boundary_face.calc_center_median()
+                    for boundary_edge in boundary_face.edges:
+                        if boundary_edge[grow_edge_lock_layer] or len(boundary_edge.link_faces) != 2:
+                            continue
+                        for boundary_neighbor in boundary_edge.link_faces:
+                            if boundary_neighbor is boundary_face or boundary_neighbor in selected:
+                                continue
+                            boundary_hops.append((boundary_neighbor.calc_center_median() - boundary_center).length)
+                if boundary_hops:
+                    # Use physical distance, not only topological face count. On organic
+                    # meshes triangle sizes vary a lot; without this a side with larger
+                    # faces advances farther per wheel tick and reaches/spills over a
+                    # boundary before the opposite side catches up.
+                    max_advance_distance = median(boundary_hops) * 1.35
+
             for face in boundary_faces:
                 for edge in face.edges:
                     # Ctrl+Wheel should wrap along the same connected surface, but it must
@@ -647,6 +667,10 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                             # Persist this exact blocked crossing between wheel ticks.
                             edge[grow_edge_lock_layer] = 1
                             continue
+                        if max_advance_distance is not None:
+                            hop_distance = (neighbor.calc_center_median() - face.calc_center_median()).length
+                            if hop_distance > max_advance_distance:
+                                continue
                         to_add.add(neighbor)
             if not to_add:
                 break
