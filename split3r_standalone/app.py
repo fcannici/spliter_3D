@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
 )
 from pyvistaqt import QtInteractor
 
+from app.extraction import extract_plug_socket
 from app.mesh_io import load_trimesh, trimesh_to_polydata, validate_polydata
 from app.selection import build_adjacency_dict
 from split3r_standalone.selection import PaintSelectionState, SmartPaintParams, smart_paint_expand
@@ -105,8 +106,14 @@ class Split3rStandalone(QMainWindow):
         self.paint_state = PaintSelectionState()
         self.cell_picker = vtk.vtkCellPicker()
         self.main_actor = None
+        self.plug_actor = None
+        self.body_actor = None
         self.cell_centers: np.ndarray | None = None
+        self.cell_normals: np.ndarray | None = None
         self.cell_center_tree: KDTree | None = None
+        self.last_pick_position: np.ndarray | None = None
+        self.last_plug: pv.PolyData | None = None
+        self.last_body: pv.PolyData | None = None
 
         self.central = QWidget()
         self.setCentralWidget(self.central)
@@ -201,10 +208,22 @@ class Split3rStandalone(QMainWindow):
 
         extract_group = QGroupBox("3) Extract")
         extract_layout = QVBoxLayout(extract_group)
-        self.extract_btn = QPushButton("Extract Plug + Socket (próximo paso)")
-        self.extract_btn.setEnabled(False)
+        self.depth_label = QLabel("Plug thickness: 2.0")
+        extract_layout.addWidget(self.depth_label)
+        self.depth_slider = QSlider(Qt.Orientation.Horizontal)
+        self.depth_slider.setMinimum(1)
+        self.depth_slider.setMaximum(100)
+        self.depth_slider.setValue(20)
+        self.depth_slider.valueChanged.connect(lambda v: self.depth_label.setText(f"Plug thickness: {v / 10:.1f}"))
+        extract_layout.addWidget(self.depth_slider)
+        self.extract_btn = QPushButton("Extract Plug + Socket")
+        self.extract_btn.clicked.connect(self.extract_selection)
         extract_layout.addWidget(self.extract_btn)
-        extract_layout.addWidget(QLabel("MVP actual: selección standalone. Backend Blender headless sigue luego."))
+        self.export_btn = QPushButton("Export Last Plug + Body")
+        self.export_btn.clicked.connect(self.export_last_outputs)
+        self.export_btn.setEnabled(False)
+        extract_layout.addWidget(self.export_btn)
+        extract_layout.addWidget(QLabel("Extracción inicial local; Blender headless robusto queda para V2.1."))
         panel_layout.addWidget(extract_group)
         panel_layout.addStretch(1)
 
@@ -229,6 +248,7 @@ class Split3rStandalone(QMainWindow):
         try:
             self.trimesh_mesh = load_trimesh(path)
             self.current_mesh = trimesh_to_polydata(self.trimesh_mesh).triangulate()
+            self.current_mesh = self.current_mesh.compute_normals(cell_normals=True, point_normals=False, auto_orient_normals=True)
             validate_polydata(self.current_mesh)
             self.adjacency = build_adjacency_dict(
                 self.trimesh_mesh.face_adjacency,
@@ -236,7 +256,11 @@ class Split3rStandalone(QMainWindow):
             )
             self.paint_state.clear()
             self.cell_centers = self.current_mesh.cell_centers().points
+            self.cell_normals = np.asarray(self.current_mesh.cell_data.get("Normals"), dtype=float)
             self.cell_center_tree = KDTree(self.cell_centers)
+            self.last_plug = None
+            self.last_body = None
+            self.export_btn.setEnabled(False)
             self.plotter.clear()
             self.plotter.add_axes()
             self.current_mesh.cell_data["split3r_color"] = self._cell_colors()
@@ -259,7 +283,12 @@ class Split3rStandalone(QMainWindow):
         if self.current_mesh is None:
             return -1
         self.cell_picker.Pick(vtk_pos[0], vtk_pos[1], 0, self.plotter.renderer)
-        return int(self.cell_picker.GetCellId())
+        cell_id = int(self.cell_picker.GetCellId())
+        if cell_id >= 0:
+            self.last_pick_position = np.asarray(self.cell_picker.GetPickPosition(), dtype=float)
+        else:
+            self.last_pick_position = None
+        return cell_id
 
     def _brush_faces(self, seed_face: int) -> set[int]:
         if seed_face < 0:
@@ -267,9 +296,33 @@ class Split3rStandalone(QMainWindow):
         if self.cell_centers is None or self.cell_center_tree is None:
             return {seed_face}
         radius = max(0.01, self.brush_slider.value() / 10.0)
-        center = self.cell_centers[seed_face]
-        nearby = self.cell_center_tree.query_ball_point(center, r=radius)
-        return {int(face_id) for face_id in nearby}
+        pick_position = self.last_pick_position if self.last_pick_position is not None else self.cell_centers[seed_face]
+        nearby = self.cell_center_tree.query_ball_point(pick_position, r=radius)
+        if not nearby:
+            return {seed_face}
+
+        # Bambu/Split3r-like paint should affect the visible shell under the cursor, not
+        # back-side/internal triangles inside the brush sphere. Keep faces near the picked
+        # surface depth and facing the active camera.
+        camera_pos = np.asarray(self.plotter.renderer.GetActiveCamera().GetPosition(), dtype=float)
+        view_vec = camera_pos - pick_position
+        view_norm = float(np.linalg.norm(view_vec))
+        if view_norm <= 1e-9 or self.cell_normals is None or len(self.cell_normals) != len(self.cell_centers):
+            return {int(face_id) for face_id in nearby}
+        view_dir = view_vec / view_norm
+        max_depth = max(radius * 0.55, 0.05)
+        visible_faces: set[int] = set()
+        for face_id in nearby:
+            face_id = int(face_id)
+            center = self.cell_centers[face_id]
+            depth_delta = float(np.dot(center - pick_position, view_dir))
+            if abs(depth_delta) > max_depth:
+                continue
+            normal = self.cell_normals[face_id]
+            if float(np.dot(normal, camera_pos - center)) <= 0:
+                continue
+            visible_faces.add(face_id)
+        return visible_faces or {seed_face}
 
     def paint_at(self, vtk_pos: tuple[int, int], mode: str) -> None:
         face = self._pick_face(vtk_pos)
@@ -324,6 +377,53 @@ class Split3rStandalone(QMainWindow):
             return
         self.current_mesh.cell_data["split3r_color"] = self._cell_colors()
         self.plotter.update_scalars(self.current_mesh.cell_data["split3r_color"], mesh=self.current_mesh, render=True)
+
+    def extract_selection(self) -> None:
+        if self.current_mesh is None:
+            self.status_label.setText("Primero importá un modelo.")
+            return
+        if not self.paint_state.include_faces:
+            self.status_label.setText("Pintá o expandí una selección roja antes de extraer.")
+            return
+        try:
+            depth = max(0.1, self.depth_slider.value() / 10.0)
+            self.status_label.setText("Extrayendo plug/socket...")
+            QApplication.processEvents()
+            plug, body = extract_plug_socket(self.current_mesh.copy(), set(self.paint_state.include_faces), depth)
+            self.last_plug = plug
+            self.last_body = body
+            if self.plug_actor is not None:
+                self.plotter.remove_actor(self.plug_actor)
+            if self.body_actor is not None:
+                self.plotter.remove_actor(self.body_actor)
+            self.body_actor = self.plotter.add_mesh(body, color="#bcb896", opacity=0.28, show_edges=False)
+            self.plug_actor = self.plotter.add_mesh(plug, color="#d98613", opacity=1.0, show_edges=False)
+            if self.main_actor is not None:
+                self.main_actor.SetVisibility(False)
+            self.export_btn.setEnabled(True)
+            self.plotter.render()
+            self.status_label.setText(f"Extracción lista. Plug faces: {plug.n_cells} | Body faces: {body.n_cells}")
+        except Exception as exc:  # noqa: BLE001 - UI boundary
+            logger.exception("Extraction failed")
+            self.status_label.setText(f"Error extrayendo: {exc}")
+
+    def export_last_outputs(self) -> None:
+        if self.last_plug is None or self.last_body is None:
+            self.status_label.setText("No hay extracción para exportar.")
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, "Elegir carpeta de exportación", "")
+        if not out_dir:
+            return
+        try:
+            out = Path(out_dir)
+            plug_path = out / "split3r_plug.stl"
+            body_path = out / "split3r_body_socket.stl"
+            self.last_plug.save(plug_path)
+            self.last_body.save(body_path)
+            self.status_label.setText(f"Exportado:\n{plug_path}\n{body_path}")
+        except Exception as exc:  # noqa: BLE001 - UI boundary
+            logger.exception("Export failed")
+            self.status_label.setText(f"Error exportando: {exc}")
 
     def _update_labels(self) -> None:
         self.count_label.setText(

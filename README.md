@@ -138,8 +138,10 @@ Objetivo UX: aproximarse al flujo de Split3r/Bambu Paint:
 - Slider `Brush radius` controla el radio de pintura.
 - `Ctrl + Click` marca Include/pieza en rojo.
 - `Alt + Click` marca Exclude/proteger body en azul.
+- La brocha filtra caras no visibles/back-side para comportarse más como slicer.
 - `Smart Paint Expand` expande desde semillas positivas sin entrar en zonas protegidas.
-- El backend de extracción robusta seguirá usando Blender headless en una fase posterior.
+- `Extract Plug + Socket` genera una extracción inicial y permite exportar STL.
+- El backend Blender headless robusto queda como siguiente mejora para boolean/solidify/export avanzado.
 
 Entrypoint:
 
