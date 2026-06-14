@@ -57,9 +57,25 @@ class PaintInteractor(QtInteractor):
         self.setMouseTracking(True)
         self.is_painting = False
         self.paint_mode = "include"
+        self.space_navigation = False
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space:
+            self.space_navigation = True
+            return
+        super().keyPressEvent(ev)
+
+    def keyReleaseEvent(self, ev):
+        if ev.key() == Qt.Key.Key_Space:
+            self.space_navigation = False
+            return
+        super().keyReleaseEvent(ev)
 
     def _should_paint(self, ev) -> bool:
         if self.main_window is None:
+            return False
+        if self.space_navigation:
             return False
         modifiers = ev.modifiers()
         return self.main_window.paint_enabled_checkbox.isChecked() or bool(
@@ -199,10 +215,10 @@ class Split3rStandalone(QMainWindow):
         for btn in (self.include_radio, self.exclude_radio, self.erase_radio):
             self.mode_group.addButton(btn)
             paint_layout.addWidget(btn)
-        self.paint_enabled_checkbox = QCheckBox("Paint mode enabled")
-        self.paint_enabled_checkbox.setChecked(False)
+        self.paint_enabled_checkbox = QCheckBox("Paint enabled / herramienta pintura activa")
+        self.paint_enabled_checkbox.setChecked(True)
         paint_layout.addWidget(self.paint_enabled_checkbox)
-        paint_layout.addWidget(QLabel("Navegación normal con mouse. Activá Paint mode para pintar arrastrando. Ctrl+Click pinta Include rápido; Alt+Click pinta Exclude."))
+        paint_layout.addWidget(QLabel("Dejalo activo: click izquierdo pinta; rueda/derecho/medio navegan. Mantené Espacio + click izquierdo para orbitar sin apagar pintura. Ctrl pinta Include; Alt pinta Exclude."))
         self.brush_label = QLabel("Brush radius: 2.0")
         paint_layout.addWidget(self.brush_label)
         self.brush_slider = QSlider(Qt.Orientation.Horizontal)
