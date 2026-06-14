@@ -499,16 +499,16 @@ class SPLIT3R_OT_smart_shell_select(Operator):
         # Smart Shell is a replacement selection from the active seed face.
         # If an old overgrown selection remains selected, leaving it active makes it look
         # like the settings/script did not change because the old faces stay selected.
-        grow_lock_layer = bm.faces.layers.int.get("split3r_grow_locked")
-        if grow_lock_layer is None:
-            grow_lock_layer = bm.faces.layers.int.new("split3r_grow_locked")
-            # Adding a custom data layer can invalidate existing BMFace references.
-            bm.faces.ensure_lookup_table()
-            active = bm.faces[active_index]
+        old_face_lock_layer = bm.faces.layers.int.get("split3r_grow_locked")
+        edge_lock_layer = bm.edges.layers.int.get("split3r_grow_edge_locked")
         for face in bm.faces:
-            face[grow_lock_layer] = 0
+            if old_face_lock_layer is not None:
+                face[old_face_lock_layer] = 0
             if face is not active:
                 face.select_set(False)
+        if edge_lock_layer is not None:
+            for edge in bm.edges:
+                edge[edge_lock_layer] = 0
         active.select_set(True)
 
         seed_normal = active.normal.copy()
@@ -556,10 +556,15 @@ class SPLIT3R_OT_reset_selection_settings(Operator):
         obj = context.object
         if obj is not None and obj.type == "MESH" and obj.mode == "EDIT":
             bm = bmesh.from_edit_mesh(obj.data)
-            layer = bm.faces.layers.int.get("split3r_grow_locked")
-            if layer is not None:
+            face_layer = bm.faces.layers.int.get("split3r_grow_locked")
+            if face_layer is not None:
                 for face in bm.faces:
-                    face[layer] = 0
+                    face[face_layer] = 0
+            edge_layer = bm.edges.layers.int.get("split3r_grow_edge_locked")
+            if edge_layer is not None:
+                for edge in bm.edges:
+                    edge[edge_layer] = 0
+            if face_layer is not None or edge_layer is not None:
                 bmesh.update_edit_mesh(obj.data)
         self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 19, Angle-limited OFF. Grow locks limpiados.")
         return {"FINISHED"}
@@ -579,11 +584,13 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
         bpy.ops.mesh.select_mode(type="FACE")
         bm = bmesh.from_edit_mesh(obj.data)
         bm.faces.ensure_lookup_table()
-        grow_lock_layer = bm.faces.layers.int.get("split3r_grow_locked")
-        if grow_lock_layer is None:
-            grow_lock_layer = bm.faces.layers.int.new("split3r_grow_locked")
-            # Adding a custom data layer can invalidate existing BMFace references.
+        bm.edges.ensure_lookup_table()
+        grow_edge_lock_layer = bm.edges.layers.int.get("split3r_grow_edge_locked")
+        if grow_edge_lock_layer is None:
+            grow_edge_lock_layer = bm.edges.layers.int.new("split3r_grow_edge_locked")
+            # Adding a custom data layer can invalidate existing BM references.
             bm.faces.ensure_lookup_table()
+            bm.edges.ensure_lookup_table()
         selected = {face for face in bm.faces if face.select}
         if not selected:
             self.report({"ERROR"}, "Seleccioná al menos una cara antes de ampliar.")
@@ -616,40 +623,19 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                         boundary_faces.append(face)
                         break
             for face in boundary_faces:
-                if face[grow_lock_layer]:
-                    continue
-                face_reached_boundary = False
-                if not settings.grow_use_angle_limits:
-                    for edge in face.edges:
-                        if len(edge.link_faces) != 2:
-                            face_reached_boundary = True
-                            break
-                        for neighbor in edge.link_faces:
-                            if neighbor is face or neighbor in selected:
-                                continue
-                            if face.normal.angle(neighbor.normal, 0.0) > max_boundary_angle:
-                                face_reached_boundary = True
-                                break
-                        if face_reached_boundary:
-                            break
-                if face_reached_boundary:
-                    # Persist the reached limit between Ctrl+Wheel events. Without this,
-                    # the next wheel tick can continue growing around the same boundary.
-                    face[grow_lock_layer] = 1
-                    continue
                 for edge in face.edges:
                     # Ctrl+Wheel should wrap along the same connected surface, but it must
                     # not leak through boundary/non-manifold edges or across sharp folds.
+                    # Important: lock the forbidden transition/edge, not the whole face.
+                    # A face at the root can touch the body on one side and still need to
+                    # grow along the valid horn surface on another side.
+                    if edge[grow_edge_lock_layer]:
+                        continue
                     if len(edge.link_faces) != 2:
+                        edge[grow_edge_lock_layer] = 1
                         continue
                     for neighbor in edge.link_faces:
                         if neighbor is face or neighbor in selected:
-                            continue
-                        if any(
-                            adjacent is not neighbor and adjacent in selected and adjacent[grow_lock_layer]
-                            for neighbor_edge in neighbor.edges
-                            for adjacent in neighbor_edge.link_faces
-                        ):
                             continue
                         local_angle = face.normal.angle(neighbor.normal, 0.0)
                         if settings.grow_use_angle_limits:
@@ -658,7 +644,8 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                             if neighbor.normal.angle(avg, 0.0) > max_seed_angle:
                                 continue
                         elif local_angle > max_boundary_angle:
-                            face[grow_lock_layer] = 1
+                            # Persist this exact blocked crossing between wheel ticks.
+                            edge[grow_edge_lock_layer] = 1
                             continue
                         to_add.add(neighbor)
             if not to_add:
@@ -668,61 +655,6 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
             selected.update(to_add)
             added_total += len(to_add)
 
-            if not settings.grow_use_angle_limits:
-                # Fine cleanup for the final boundary: keep the strict 19 degree wall,
-                # but fill tiny internal one-ring gaps and remove tiny spill faces that
-                # touched a locked boundary. This avoids choosing between overreach and
-                # missing a few valid faces by changing only the global angle.
-                prune = set()
-                for face in to_add:
-                    selected_neighbors = []
-                    locked_neighbor = False
-                    for edge in face.edges:
-                        if len(edge.link_faces) != 2:
-                            continue
-                        for neighbor in edge.link_faces:
-                            if neighbor is face:
-                                continue
-                            if neighbor in selected:
-                                selected_neighbors.append(neighbor)
-                                if neighbor[grow_lock_layer]:
-                                    locked_neighbor = True
-                    if locked_neighbor and len(selected_neighbors) <= 2:
-                        prune.add(face)
-                for face in prune:
-                    face.select_set(False)
-                selected.difference_update(prune)
-                added_total -= len(prune)
-
-                fill = set()
-                fill_sources = set(boundary_faces).union(to_add).difference(prune)
-                for face in fill_sources:
-                    if face not in selected:
-                        continue
-                    for edge in face.edges:
-                        if len(edge.link_faces) != 2:
-                            continue
-                        for candidate in edge.link_faces:
-                            if candidate is face or candidate in selected or candidate[grow_lock_layer]:
-                                continue
-                            support = 0
-                            allowed = True
-                            for c_edge in candidate.edges:
-                                if len(c_edge.link_faces) != 2:
-                                    continue
-                                for adjacent in c_edge.link_faces:
-                                    if adjacent is candidate:
-                                        continue
-                                    if adjacent in selected:
-                                        support += 1
-                                        if candidate.normal.angle(adjacent.normal, 0.0) > max_boundary_angle:
-                                            allowed = False
-                            if allowed and support >= 2:
-                                fill.add(candidate)
-                for face in fill:
-                    face.select_set(True)
-                selected.update(fill)
-                added_total += len(fill)
 
         bmesh.update_edit_mesh(obj.data)
         mode = "angle-limited" if settings.grow_use_angle_limits else "surface"
