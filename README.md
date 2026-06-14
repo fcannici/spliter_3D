@@ -32,11 +32,19 @@ pip install -r requirements.txt
 
 ## Ejecución
 
+Prototipo clásico PyVista/VTK:
+
 ```bash
 python main.py
 ```
 
-Luego usa **Archivo > Importar STL/OBJ/3MF...** para cargar un modelo.
+Split3r V2 standalone Smart Paint:
+
+```bash
+python standalone_main.py
+```
+
+Luego usa **Archivo > Importar STL/OBJ/3MF...** / **Archivo > Importar modelo...** para cargar un modelo.
 
 ## Controles básicos
 
@@ -116,6 +124,28 @@ pytest
 
 Los modelos grandes (`*.stl`, `*.3mf`) están ignorados por defecto en `.gitignore`. Para ejemplos pequeños, usar `assets/`; para modelos pesados, preferir Git LFS o almacenamiento externo.
 
+## Split3r V2 standalone Smart Paint
+
+La ruta recomendada de producto es una app separada en:
+
+```txt
+split3r_standalone/
+```
+
+Objetivo UX: aproximarse al flujo de Split3r/Bambu Paint:
+
+- Click pinta caras.
+- `Ctrl + Click` marca Include/pieza en rojo.
+- `Alt + Click` marca Exclude/proteger body en azul.
+- `Smart Paint Expand` expande desde semillas positivas sin entrar en zonas protegidas.
+- El backend de extracción robusta seguirá usando Blender headless en una fase posterior.
+
+Entrypoint:
+
+```bash
+python standalone_main.py
+```
+
 ## Blender add-on prototype
 
 Después de probar el core PyVista/VTK con modelos orgánicos complejos, se inició una V2 recomendada como add-on de Blender en:
@@ -134,4 +164,4 @@ Ver `blender_split3r_addon/README.md` para instalación y flujo de prueba.
 
 ## Estado
 
-La app PyVista queda como prototipo/reference. El camino recomendado para continuar es el add-on de Blender, porque evita generar manualmente tapas y paredes sobre mallas orgánicas complejas.
+La app PyVista queda como prototipo/reference. El add-on de Blender queda como laboratorio geométrico. El camino recomendado para producto final es `split3r_standalone/` con Blender headless como motor interno para boolean/solidify/export.

@@ -18,8 +18,9 @@ Split3r Clone is now identified as a Python desktop app for 3D mesh face selecti
 - Large sample models moved to `assets/` and ignored by default for future large assets.
 - PyVista/VTK extraction improved but showed architectural limits on complex organic 3MF meshes.
 - Recommended V2 started as a Blender add-on in `blender_split3r_addon/` using `bmesh`, `Solidify`, and `Boolean EXACT`.
-- Lightweight validation passed: `python -m py_compile blender_split3r_addon/__init__.py main.py app/*.py scripts/*.py tests/*.py && pytest -q`.
+- Product-direction V2 started as a standalone Smart Paint app in `split3r_standalone/`, with Include/Exclude marks and conservative Smart Paint expansion.
+- Lightweight validation passed: `python -m py_compile standalone_main.py split3r_standalone/*.py blender_split3r_addon/__init__.py main.py app/*.py scripts/*.py tests/*.py && pytest -q`.
 
 ## Next
 
-Use the new `Threadwell Test Request` section in `blender_split3r_addon/` to choose a test file/prompt from Blender, then run `scripts/blender_split3r_smoke_test.py` headlessly with Blender to validate import, Smart Shell, plug/socket, and export flow.
+Continue Split3r V2 standalone: run `python standalone_main.py`, load the real 3MF, validate Include/Exclude painting and Smart Paint Expand against the manual reference selection, then wire extraction to Blender headless for plug/socket generation.

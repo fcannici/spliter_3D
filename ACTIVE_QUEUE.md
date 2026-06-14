@@ -136,3 +136,11 @@ Scope:
 - Mostrar preview del código antes de ejecutarlo.
 - Registrar logs de comandos y respuestas.
 - Probar instalación manual del add-on en Blender.
+
+### T021 — Crear Split3r V2 como app standalone Smart Paint
+
+Status: in-progress
+Scope:
+- Crear `split3r_standalone/` como ruta de producto separada de Blender.
+- Implementar visor propio, marcas Include/Exclude, y Smart Paint Expand inicial.
+- Mantener Blender como laboratorio y futuro motor headless para boolean/solidify/export.
