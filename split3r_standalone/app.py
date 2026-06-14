@@ -11,6 +11,7 @@ os.environ.setdefault("QT_OPENGL", "desktop")
 import numpy as np
 import pyvista as pv
 import vtk
+from scipy.spatial import KDTree
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
@@ -52,20 +53,38 @@ class PaintInteractor(QtInteractor):
         super().__init__(parent, **kwargs)
         self.main_window: Split3rStandalone | None = parent
         self.setMouseTracking(True)
+        self.is_painting = False
+        self.paint_mode = "include"
+
+    def _mode_from_event(self, ev) -> str:
+        modifiers = ev.modifiers()
+        if modifiers & Qt.KeyboardModifier.AltModifier:
+            return "exclude"
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            return "include"
+        return self.main_window.current_paint_mode() if self.main_window is not None else "include"
 
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MouseButton.LeftButton and self.main_window is not None:
+            self.is_painting = True
+            self.paint_mode = self._mode_from_event(ev)
             vtk_pos = (ev.pos().x(), self.height() - ev.pos().y())
-            modifiers = ev.modifiers()
-            if modifiers & Qt.KeyboardModifier.AltModifier:
-                self.main_window.paint_at(vtk_pos, mode="exclude")
-                return
-            if modifiers & Qt.KeyboardModifier.ControlModifier:
-                self.main_window.paint_at(vtk_pos, mode="include")
-                return
-            self.main_window.paint_at(vtk_pos, mode=self.main_window.current_paint_mode())
+            self.main_window.paint_at(vtk_pos, mode=self.paint_mode)
             return
         super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        if self.is_painting and self.main_window is not None:
+            vtk_pos = (ev.pos().x(), self.height() - ev.pos().y())
+            self.main_window.paint_at(vtk_pos, mode=self.paint_mode)
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.MouseButton.LeftButton and self.is_painting:
+            self.is_painting = False
+            return
+        super().mouseReleaseEvent(ev)
 
 
 class Split3rStandalone(QMainWindow):
@@ -86,6 +105,8 @@ class Split3rStandalone(QMainWindow):
         self.paint_state = PaintSelectionState()
         self.cell_picker = vtk.vtkCellPicker()
         self.main_actor = None
+        self.cell_centers: np.ndarray | None = None
+        self.cell_center_tree: KDTree | None = None
 
         self.central = QWidget()
         self.setCentralWidget(self.central)
@@ -138,7 +159,15 @@ class Split3rStandalone(QMainWindow):
         for btn in (self.include_radio, self.exclude_radio, self.erase_radio):
             self.mode_group.addButton(btn)
             paint_layout.addWidget(btn)
-        paint_layout.addWidget(QLabel("Click pinta. Ctrl+Click Include. Alt+Click Exclude."))
+        paint_layout.addWidget(QLabel("Click/arrastrar pinta. Ctrl+Click Include. Alt+Click Exclude."))
+        self.brush_label = QLabel("Brush radius: 2.0")
+        paint_layout.addWidget(self.brush_label)
+        self.brush_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brush_slider.setMinimum(1)
+        self.brush_slider.setMaximum(100)
+        self.brush_slider.setValue(20)
+        self.brush_slider.valueChanged.connect(lambda v: self.brush_label.setText(f"Brush radius: {v / 10:.1f}"))
+        paint_layout.addWidget(self.brush_slider)
         panel_layout.addWidget(paint_group)
 
         expand_group = QGroupBox("2) Smart Expand")
@@ -206,6 +235,8 @@ class Split3rStandalone(QMainWindow):
                 self.trimesh_mesh.face_adjacency_angles,
             )
             self.paint_state.clear()
+            self.cell_centers = self.current_mesh.cell_centers().points
+            self.cell_center_tree = KDTree(self.cell_centers)
             self.plotter.clear()
             self.plotter.add_axes()
             self.current_mesh.cell_data["split3r_color"] = self._cell_colors()
@@ -231,9 +262,14 @@ class Split3rStandalone(QMainWindow):
         return int(self.cell_picker.GetCellId())
 
     def _brush_faces(self, seed_face: int) -> set[int]:
-        # First MVP: single-face paint. Keeping this explicit makes the later visible brush
-        # radius implementation straightforward without changing the selection model.
-        return {seed_face} if seed_face >= 0 else set()
+        if seed_face < 0:
+            return set()
+        if self.cell_centers is None or self.cell_center_tree is None:
+            return {seed_face}
+        radius = max(0.01, self.brush_slider.value() / 10.0)
+        center = self.cell_centers[seed_face]
+        nearby = self.cell_center_tree.query_ball_point(center, r=radius)
+        return {int(face_id) for face_id in nearby}
 
     def paint_at(self, vtk_pos: tuple[int, int], mode: str) -> None:
         face = self._pick_face(vtk_pos)

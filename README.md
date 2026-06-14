@@ -134,7 +134,8 @@ split3r_standalone/
 
 Objetivo UX: aproximarse al flujo de Split3r/Bambu Paint:
 
-- Click pinta caras.
+- Click/arrastrar pinta caras con brocha.
+- Slider `Brush radius` controla el radio de pintura.
 - `Ctrl + Click` marca Include/pieza en rojo.
 - `Alt + Click` marca Exclude/proteger body en azul.
 - `Smart Paint Expand` expande desde semillas positivas sin entrar en zonas protegidas.
