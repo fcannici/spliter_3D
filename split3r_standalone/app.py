@@ -17,6 +17,7 @@ from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QDockWidget,
     QFileDialog,
     QGroupBox,
@@ -57,6 +58,14 @@ class PaintInteractor(QtInteractor):
         self.is_painting = False
         self.paint_mode = "include"
 
+    def _should_paint(self, ev) -> bool:
+        if self.main_window is None:
+            return False
+        modifiers = ev.modifiers()
+        return self.main_window.paint_enabled_checkbox.isChecked() or bool(
+            modifiers & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier)
+        )
+
     def _mode_from_event(self, ev) -> str:
         modifiers = ev.modifiers()
         if modifiers & Qt.KeyboardModifier.AltModifier:
@@ -66,7 +75,7 @@ class PaintInteractor(QtInteractor):
         return self.main_window.current_paint_mode() if self.main_window is not None else "include"
 
     def mousePressEvent(self, ev):
-        if ev.button() == Qt.MouseButton.LeftButton and self.main_window is not None:
+        if ev.button() == Qt.MouseButton.LeftButton and self.main_window is not None and self._should_paint(ev):
             self.is_painting = True
             self.paint_mode = self._mode_from_event(ev)
             vtk_pos = (ev.pos().x(), self.height() - ev.pos().y())
@@ -114,13 +123,14 @@ class Split3rStandalone(QMainWindow):
         self.last_pick_position: np.ndarray | None = None
         self.last_plug: pv.PolyData | None = None
         self.last_body: pv.PolyData | None = None
+        self.explode_vector = np.array([1.0, 0.0, 0.0], dtype=float)
 
         self.central = QWidget()
         self.setCentralWidget(self.central)
         layout = QHBoxLayout(self.central)
         self.plotter = PaintInteractor(self)
         layout.addWidget(self.plotter.interactor)
-        self.plotter.set_background("#202020")
+        self.plotter.set_background("#f3f1e7")
         self.plotter.add_axes()
         self.plotter.enable_terrain_style()
 
@@ -156,6 +166,29 @@ class Split3rStandalone(QMainWindow):
         self.count_label = QLabel("Include: 0 | Exclude: 0")
         panel_layout.addWidget(self.count_label)
 
+        view_group = QGroupBox("0) View / Inspect")
+        view_layout = QVBoxLayout(view_group)
+        self.show_edges_checkbox = QCheckBox("Show mesh edges")
+        self.show_edges_checkbox.setChecked(False)
+        self.show_edges_checkbox.stateChanged.connect(self.apply_display_options)
+        view_layout.addWidget(self.show_edges_checkbox)
+        self.show_original_checkbox = QCheckBox("Show original model")
+        self.show_original_checkbox.setChecked(True)
+        self.show_original_checkbox.stateChanged.connect(self.apply_display_options)
+        view_layout.addWidget(self.show_original_checkbox)
+        reset_view_btn = QPushButton("Reset View")
+        reset_view_btn.clicked.connect(self.reset_view)
+        view_layout.addWidget(reset_view_btn)
+        self.explode_label = QLabel("Explode extracted plug: 0.0")
+        view_layout.addWidget(self.explode_label)
+        self.explode_slider = QSlider(Qt.Orientation.Horizontal)
+        self.explode_slider.setMinimum(0)
+        self.explode_slider.setMaximum(100)
+        self.explode_slider.setValue(0)
+        self.explode_slider.valueChanged.connect(self.update_explode_position)
+        view_layout.addWidget(self.explode_slider)
+        panel_layout.addWidget(view_group)
+
         paint_group = QGroupBox("1) Paint")
         paint_layout = QVBoxLayout(paint_group)
         self.mode_group = QButtonGroup(self)
@@ -166,7 +199,10 @@ class Split3rStandalone(QMainWindow):
         for btn in (self.include_radio, self.exclude_radio, self.erase_radio):
             self.mode_group.addButton(btn)
             paint_layout.addWidget(btn)
-        paint_layout.addWidget(QLabel("Click/arrastrar pinta. Ctrl+Click Include. Alt+Click Exclude."))
+        self.paint_enabled_checkbox = QCheckBox("Paint mode enabled")
+        self.paint_enabled_checkbox.setChecked(False)
+        paint_layout.addWidget(self.paint_enabled_checkbox)
+        paint_layout.addWidget(QLabel("Navegación normal con mouse. Activá Paint mode para pintar arrastrando. Ctrl+Click pinta Include rápido; Alt+Click pinta Exclude."))
         self.brush_label = QLabel("Brush radius: 2.0")
         paint_layout.addWidget(self.brush_label)
         self.brush_slider = QSlider(Qt.Orientation.Horizontal)
@@ -233,6 +269,29 @@ class Split3rStandalone(QMainWindow):
         panel_layout.addWidget(extract_group)
         panel_layout.addStretch(1)
 
+    def reset_view(self) -> None:
+        self.plotter.reset_camera()
+        self.plotter.render()
+
+    def apply_display_options(self) -> None:
+        show_edges = self.show_edges_checkbox.isChecked() if hasattr(self, "show_edges_checkbox") else False
+        if self.main_actor is not None:
+            self.main_actor.SetVisibility(self.show_original_checkbox.isChecked())
+            self.main_actor.GetProperty().SetEdgeVisibility(bool(show_edges))
+        if self.plug_actor is not None:
+            self.plug_actor.GetProperty().SetEdgeVisibility(bool(show_edges))
+        if self.body_actor is not None:
+            self.body_actor.GetProperty().SetEdgeVisibility(bool(show_edges))
+        self.plotter.render()
+
+    def update_explode_position(self, value: int | None = None) -> None:
+        distance = (self.explode_slider.value() if value is None else value) / 10.0
+        self.explode_label.setText(f"Explode extracted plug: {distance:.1f}")
+        if self.plug_actor is not None:
+            offset = self.explode_vector * distance
+            self.plug_actor.SetPosition(float(offset[0]), float(offset[1]), float(offset[2]))
+            self.plotter.render()
+
     def current_paint_mode(self) -> str:
         if self.exclude_radio.isChecked():
             return "exclude"
@@ -266,7 +325,11 @@ class Split3rStandalone(QMainWindow):
             self.cell_center_tree = KDTree(self.cell_centers)
             self.last_plug = None
             self.last_body = None
+            self.plug_actor = None
+            self.body_actor = None
             self.export_btn.setEnabled(False)
+            self.explode_slider.setValue(0)
+            self.show_original_checkbox.setChecked(True)
             self.plotter.clear()
             self.plotter.add_axes()
             self.current_mesh.cell_data["split3r_color"] = self._cell_colors()
@@ -274,10 +337,14 @@ class Split3rStandalone(QMainWindow):
                 self.current_mesh,
                 scalars="split3r_color",
                 rgb=True,
-                show_edges=False,
+                show_edges=self.show_edges_checkbox.isChecked(),
                 smooth_shading=True,
+                ambient=0.35,
+                diffuse=0.75,
+                specular=0.25,
             )
             self.plotter.reset_camera()
+            self.apply_display_options()
             self._update_labels()
             self.status_label.setText(f"Modelo cargado: {Path(path).name}\nFaces: {self.current_mesh.n_cells}")
             logger.info("Loaded model %s faces=%s", path, self.current_mesh.n_cells)
@@ -399,9 +466,21 @@ class Split3rStandalone(QMainWindow):
             piece = self._selected_piece_surface()
             if self.plug_actor is not None:
                 self.plotter.remove_actor(self.plug_actor)
-            self.plug_actor = self.plotter.add_mesh(piece, color="#d98613", opacity=1.0, show_edges=False)
+            if self.current_mesh is not None:
+                vec = np.asarray(piece.center, dtype=float) - np.asarray(self.current_mesh.center, dtype=float)
+                norm = float(np.linalg.norm(vec))
+                self.explode_vector = vec / norm if norm > 1e-9 else np.array([1.0, 0.0, 0.0], dtype=float)
+            self.plug_actor = self.plotter.add_mesh(
+                piece,
+                color="#d98613",
+                opacity=1.0,
+                show_edges=self.show_edges_checkbox.isChecked(),
+                smooth_shading=True,
+            )
+            self.explode_slider.setValue(max(self.explode_slider.value(), 15))
+            self.update_explode_position()
             self.plotter.render()
-            self.status_label.setText(f"Preview selected piece: {piece.n_cells} faces.")
+            self.status_label.setText(f"Preview selected piece: {piece.n_cells} faces. Usá Explode para separarla y revisar.")
         except Exception as exc:  # noqa: BLE001 - UI boundary
             logger.exception("Selected preview failed")
             self.status_label.setText(f"Error preview selección: {exc}")
@@ -436,13 +515,30 @@ class Split3rStandalone(QMainWindow):
                 self.plotter.remove_actor(self.plug_actor)
             if self.body_actor is not None:
                 self.plotter.remove_actor(self.body_actor)
-            self.body_actor = self.plotter.add_mesh(body, color="#bcb896", opacity=0.28, show_edges=False)
-            self.plug_actor = self.plotter.add_mesh(plug, color="#d98613", opacity=1.0, show_edges=False)
-            if self.main_actor is not None:
-                self.main_actor.SetVisibility(False)
+            vec = np.asarray(plug.center, dtype=float) - np.asarray(body.center, dtype=float)
+            norm = float(np.linalg.norm(vec))
+            self.explode_vector = vec / norm if norm > 1e-9 else np.array([1.0, 0.0, 0.0], dtype=float)
+            self.body_actor = self.plotter.add_mesh(
+                body,
+                color="#bcb896",
+                opacity=0.40,
+                show_edges=self.show_edges_checkbox.isChecked(),
+                smooth_shading=True,
+            )
+            self.plug_actor = self.plotter.add_mesh(
+                plug,
+                color="#d98613",
+                opacity=1.0,
+                show_edges=self.show_edges_checkbox.isChecked(),
+                smooth_shading=True,
+            )
+            self.show_original_checkbox.setChecked(False)
+            self.explode_slider.setValue(20)
+            self.update_explode_position()
             self.export_btn.setEnabled(True)
+            self.apply_display_options()
             self.plotter.render()
-            self.status_label.setText(f"Extracción lista. Plug faces: {plug.n_cells} | Body faces: {body.n_cells}")
+            self.status_label.setText(f"Extracción lista. Plug faces: {plug.n_cells} | Body faces: {body.n_cells}. Usá Explode/Show edges para revisar cierres.")
         except Exception as exc:  # noqa: BLE001 - UI boundary
             logger.exception("Extraction failed")
             self.status_label.setText(f"Error extrayendo: {exc}")
