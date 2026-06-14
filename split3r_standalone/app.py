@@ -216,6 +216,12 @@ class Split3rStandalone(QMainWindow):
         self.depth_slider.setValue(20)
         self.depth_slider.valueChanged.connect(lambda v: self.depth_label.setText(f"Plug thickness: {v / 10:.1f}"))
         extract_layout.addWidget(self.depth_slider)
+        self.preview_selected_btn = QPushButton("Preview Selected Piece")
+        self.preview_selected_btn.clicked.connect(self.preview_selected_piece)
+        extract_layout.addWidget(self.preview_selected_btn)
+        self.export_selected_btn = QPushButton("Export Selected Piece STL")
+        self.export_selected_btn.clicked.connect(self.export_selected_piece)
+        extract_layout.addWidget(self.export_selected_btn)
         self.extract_btn = QPushButton("Extract Plug + Socket")
         self.extract_btn.clicked.connect(self.extract_selection)
         extract_layout.addWidget(self.extract_btn)
@@ -377,6 +383,40 @@ class Split3rStandalone(QMainWindow):
             return
         self.current_mesh.cell_data["split3r_color"] = self._cell_colors()
         self.plotter.update_scalars(self.current_mesh.cell_data["split3r_color"], mesh=self.current_mesh, render=True)
+
+    def _selected_piece_surface(self) -> pv.PolyData:
+        if self.current_mesh is None:
+            raise ValueError("Primero importá un modelo.")
+        if not self.paint_state.include_faces:
+            raise ValueError("Pintá o expandí una selección roja antes de extraer.")
+        valid = sorted(face for face in self.paint_state.include_faces if 0 <= face < self.current_mesh.n_cells)
+        if not valid:
+            raise ValueError("La selección no contiene caras válidas.")
+        return self.current_mesh.extract_cells(valid).extract_surface().triangulate().clean()
+
+    def preview_selected_piece(self) -> None:
+        try:
+            piece = self._selected_piece_surface()
+            if self.plug_actor is not None:
+                self.plotter.remove_actor(self.plug_actor)
+            self.plug_actor = self.plotter.add_mesh(piece, color="#d98613", opacity=1.0, show_edges=False)
+            self.plotter.render()
+            self.status_label.setText(f"Preview selected piece: {piece.n_cells} faces.")
+        except Exception as exc:  # noqa: BLE001 - UI boundary
+            logger.exception("Selected preview failed")
+            self.status_label.setText(f"Error preview selección: {exc}")
+
+    def export_selected_piece(self) -> None:
+        try:
+            piece = self._selected_piece_surface()
+            path, _ = QFileDialog.getSaveFileName(self, "Exportar selección STL", "split3r_selected_piece.stl", "STL (*.stl)")
+            if not path:
+                return
+            piece.save(path)
+            self.status_label.setText(f"Selección exportada:\n{path}")
+        except Exception as exc:  # noqa: BLE001 - UI boundary
+            logger.exception("Selected export failed")
+            self.status_label.setText(f"Error exportando selección: {exc}")
 
     def extract_selection(self) -> None:
         if self.current_mesh is None:
