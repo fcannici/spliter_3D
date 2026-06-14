@@ -90,7 +90,7 @@ class Split3rSettings(PropertyGroup):
     grow_boundary_angle: FloatProperty(
         name="Grow boundary",
         description="Maximum local angle Ctrl+Wheel can cross when Angle-limited grow is disabled. Higher wraps more; lower prevents spillover",
-        default=19.5,
+        default=19.0,
         min=5.0,
         max=90.0,
     )
@@ -552,7 +552,7 @@ class SPLIT3R_OT_reset_selection_settings(Operator):
         settings.smart_step_angle = 10.0
         settings.grow_steps = 1
         settings.grow_use_angle_limits = False
-        settings.grow_boundary_angle = 19.5
+        settings.grow_boundary_angle = 19.0
         obj = context.object
         if obj is not None and obj.type == "MESH" and obj.mode == "EDIT":
             bm = bmesh.from_edit_mesh(obj.data)
@@ -561,7 +561,7 @@ class SPLIT3R_OT_reset_selection_settings(Operator):
                 for face in bm.faces:
                     face[layer] = 0
                 bmesh.update_edit_mesh(obj.data)
-        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 19.5, Angle-limited OFF. Grow locks limpiados.")
+        self.report({"INFO"}, "Selection settings restaurados: Smart 18, Step 10, Grow 1, Boundary 19, Angle-limited OFF. Grow locks limpiados.")
         return {"FINISHED"}
 
 
@@ -593,7 +593,7 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
         max_seed_angle = math.radians(settings.smart_angle)
         # Hard cap for normal Ctrl+Wheel grow. Organic meshes often have smooth-looking
         # bridges where a high UI value lets selection leak into the base/body.
-        effective_boundary = min(settings.grow_boundary_angle, 19.5)
+        effective_boundary = min(settings.grow_boundary_angle, 19.0)
         max_boundary_angle = math.radians(effective_boundary)
         avg = Vector((0.0, 0.0, 0.0))
         if settings.grow_use_angle_limits:
@@ -667,6 +667,62 @@ class SPLIT3R_OT_grow_smart_selection(Operator):
                 face.select_set(True)
             selected.update(to_add)
             added_total += len(to_add)
+
+            if not settings.grow_use_angle_limits:
+                # Fine cleanup for the final boundary: keep the strict 19 degree wall,
+                # but fill tiny internal one-ring gaps and remove tiny spill faces that
+                # touched a locked boundary. This avoids choosing between overreach and
+                # missing a few valid faces by changing only the global angle.
+                prune = set()
+                for face in to_add:
+                    selected_neighbors = []
+                    locked_neighbor = False
+                    for edge in face.edges:
+                        if len(edge.link_faces) != 2:
+                            continue
+                        for neighbor in edge.link_faces:
+                            if neighbor is face:
+                                continue
+                            if neighbor in selected:
+                                selected_neighbors.append(neighbor)
+                                if neighbor[grow_lock_layer]:
+                                    locked_neighbor = True
+                    if locked_neighbor and len(selected_neighbors) <= 2:
+                        prune.add(face)
+                for face in prune:
+                    face.select_set(False)
+                selected.difference_update(prune)
+                added_total -= len(prune)
+
+                fill = set()
+                fill_sources = set(boundary_faces).union(to_add).difference(prune)
+                for face in fill_sources:
+                    if face not in selected:
+                        continue
+                    for edge in face.edges:
+                        if len(edge.link_faces) != 2:
+                            continue
+                        for candidate in edge.link_faces:
+                            if candidate is face or candidate in selected or candidate[grow_lock_layer]:
+                                continue
+                            support = 0
+                            allowed = True
+                            for c_edge in candidate.edges:
+                                if len(c_edge.link_faces) != 2:
+                                    continue
+                                for adjacent in c_edge.link_faces:
+                                    if adjacent is candidate:
+                                        continue
+                                    if adjacent in selected:
+                                        support += 1
+                                        if candidate.normal.angle(adjacent.normal, 0.0) > max_boundary_angle:
+                                            allowed = False
+                            if allowed and support >= 2:
+                                fill.add(candidate)
+                for face in fill:
+                    face.select_set(True)
+                selected.update(fill)
+                added_total += len(fill)
 
         bmesh.update_edit_mesh(obj.data)
         mode = "angle-limited" if settings.grow_use_angle_limits else "surface"
